@@ -122,3 +122,19 @@ For release preparation, publishing, verification, or recovery, load and follow 
 ## User Override
 
 If the user's instructions conflict with any rule in this document, ask for explicit confirmation before overriding. Only then execute their instructions.
+
+## pi861 本地开发流程规则（用户指定 2026-09-22）
+
+本章为用户于 2026-09-22 明确指定的项目级开发流程规则，适用于本仓库的 pi861 开发工作。仓库既有全部规则继续有效，本章为补充而非取代。
+
+- **计划先行**：所有的开发必须先由 Codex 制定计划。调用 codex 时必须指定模型为 `gpt-6-astra`、思考等级为 `max`（本机 codex CLI 0.155.0 已实测支持该写法）。确切写法：`codex exec -m gpt-6-astra -c model_reasoning_effort="max"`。
+- **子代理开发**：计划制定后，由 ZCode（主代理）的子代理按照计划进行开发。
+- **独立审核**：开发结束后，由独立的（未参与该项开发的）子代理按照计划对成果进行审核。
+- **并发原则**：在不影响质量、不会相互干扰的情况下，尽量多模块、多节点、多子代理并发开发。
+- **开发边界**（来自开发任务书，一并写入以免与其他规则冲突）：
+  - 只在 `feat/pi861-runtime-v1` 及由它分出的任务分支上开展开发。
+  - 不直接修改或合并 `main`。
+  - 不 force push。
+  - 不发布包，不部署生产服务。
+  - 不擅自运行付费模型验收或使用真实业务数据。
+  - 仓库既有 AGENTS.md 全部规则继续有效，本章为补充而非取代。
