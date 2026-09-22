@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "typeRoots": ["../../node_modules/@types"]
+  },
+  "include": [
+    "runtime.ts",
+    "index.ts",
+    "src/**/*.ts",
+    "../../packages/*/src/**/*.d.ts",
+    "../../packages/session-backends/*/src/**/*.d.ts"
+  ]
+}

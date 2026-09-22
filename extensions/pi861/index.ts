@@ -38,6 +38,8 @@ export interface PiHost {
 	appendEntry(type: string, data?: unknown): void;
 	sendUserMessage(text: string, options?: { deliverAs?: "followUp" | "steer" }): void;
 	sendMessage(message: { customType: string; content: string; display: boolean }, options?: { triggerTurn?: boolean }): void;
+	/** Shared host event bus when present; used to detect duplicate installs across extensions. */
+	events?: object;
 }
 export interface Pi861Options {
 	/** Full runtime owns /goal when enabled; legacy goal hooks stay inert. */
@@ -48,6 +50,7 @@ export interface Pi861Options {
 }
 const GOAL_ENTRY = "pi861.goal.v1";
 const MEMORY_ENTRY = "pi861.memory.v1";
+let installClaim: { host: object; label: string } | undefined;
 function text(value: unknown, name: string): string {
 	if (typeof value !== "string") throw new Error(`${name} must be a string`);
 	return value;
@@ -77,6 +80,16 @@ function publicError(error: unknown): string {
 }
 
 export function installPi861(pi: PiHost, options: Pi861Options = {}): void {
+	// One owner per host generation: a second composition (for example the package
+	// manifest entry plus an explicit -e load) would register two /goal owners, two
+	// memory collectors and two continuation loops. Keyed by the shared event bus so
+	// a fresh extension generation replaces a torn-down one cleanly.
+	const host = pi.events ?? pi;
+	const label = options.managedGoal ? "full runtime" : "basic composition";
+	if (installClaim && installClaim.host === host) {
+		throw new Error(`Pi861 ${installClaim.label} is already installed on this host; remove the duplicate pi861 extension load`);
+	}
+	installClaim = { host, label };
 	const goals = new GoalController((state) => pi.appendEntry(GOAL_ENTRY, state ?? null));
 	const searchOptions = options.search ?? {
 		enabled: process.env.PI861_WEB_SEARCH_ENABLED === "1",
@@ -180,6 +193,7 @@ export function installPi861(pi: PiHost, options: Pi861Options = {}): void {
 	pi.on("session_shutdown", () => {
 		stopTimer();
 		inflight = undefined;
+		if (installClaim?.host === host) installClaim = undefined;
 	});
 	pi.on("input", async (raw, ctx) => {
 		const event = record(raw);

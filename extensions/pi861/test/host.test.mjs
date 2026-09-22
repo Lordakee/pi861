@@ -33,7 +33,7 @@ function host(options = {}) {
 	installPi861(pi, { search: { enabled: false }, ...options });
 	const emit = async (name, event = {}) => handlers.get(name)?.(event, ctx);
 	return {
-		commands, tools, notices, prompts, ctx, emit,
+		commands, tools, notices, prompts, ctx, pi, emit,
 		get entries() { return branch; },
 		get aborted() { return aborted; },
 		setBranch(value) { branch = value; },
@@ -191,4 +191,23 @@ test("recall started in an old session is not injected into a new session", asyn
 	await h.emit("session_start");
 	resolve([]);
 	assert.equal(await old, undefined);
+});
+test("a second pi861 composition on the same host is refused", async () => {
+	const h = host();
+	await h.emit("session_start");
+	assert.throws(
+		() => installPi861(h.pi, { memory: { backend: undefined } }),
+		/already installed on this host; remove the duplicate pi861 extension load/,
+	);
+	// The refused install must not have registered a second goal command owner.
+	assert.equal([...h.commands.keys()].filter((name) => name === "goal").length, 1);
+});
+test("a fresh host generation may install after the previous one shut down", async () => {
+	const first = host();
+	await first.emit("session_start");
+	await first.emit("session_shutdown");
+	const second = host();
+	await second.emit("session_start");
+	await second.command("goal", "status");
+	assert.match(second.notices.at(-1).message, /none/);
 });

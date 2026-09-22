@@ -15,12 +15,16 @@ export class LineProcess {
 	private closed = false;
 	private failure: Error | undefined;
 	private readonly decoder = new StringDecoder("utf8");
+	private readonly exited: Promise<void>;
 	constructor(spec: ProcessSpec, maxRecordBytes = 4_194_304) {
 		if (!spec.command || !spec.cwd) throw new Error("Executable and working directory required");
 		this.child = spawn(spec.command, spec.args, {
 			cwd: spec.cwd, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ...spec.env },
 			stdio: ["pipe", "pipe", "pipe"], shell: false, detached: process.platform !== "win32",
 		});
+		// Resolved when the child is fully gone; close() hands this to callers so they do not
+		// race process teardown (for example deleting the child's working directory on Windows).
+		this.exited = new Promise((resolve) => { this.child.once("close", () => resolve()); });
 		this.child.stderr.resume(); // Do not put arbitrary stderr/credentials in the model context.
 		this.child.stdin.on("error", () => this.fail(new Error("Child input pipe failed")));
 		this.child.on("error", () => this.fail(new Error("Child process could not start")));
@@ -79,7 +83,8 @@ export class LineProcess {
 			try { process.kill(-this.child.pid, "SIGTERM"); } catch { this.child.kill(); }
 		} else this.child.kill();
 	}
-	close(): void {
+	close(): Promise<void> {
 		this.listeners.clear(); this.fail(new Error("Process closed by owner"));
+		return this.exited;
 	}
 }

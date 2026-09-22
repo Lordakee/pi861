@@ -66,5 +66,5 @@ export class PiRpcSession {
 			return await finished;
 		} finally { effective.removeEventListener("abort", abort); remove(); this.running = false; }
 	}
-	close(): void { this.process.close(); }
+	close(): Promise<void> { return this.process.close(); }
 }
