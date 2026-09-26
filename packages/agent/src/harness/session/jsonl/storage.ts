@@ -17,6 +17,14 @@ import type {
 } from "../types.ts";
 import type { ListElement, ListReadOptions, StoredValue, Value, ValueList } from "../values.ts";
 import {
+	buildJsonlSnapshot,
+	headerLineBytes,
+	JsonlDeadByteLedger,
+	jsonlUtf8Bytes,
+	ledgerFromSnapshot,
+	shouldCompactJsonlFile,
+} from "./compaction.ts";
+import {
 	fileValue,
 	parseJsonlTransaction,
 	publishFileAtomically,
@@ -25,7 +33,13 @@ import {
 	serializeJsonlTransaction,
 } from "./io.ts";
 import { LegacyV3Source } from "./legacy-v3.ts";
-import { JSONL_STORAGE_VERSION, type JsonlStorageHeader, type JsonlStorageOptions } from "./types.ts";
+import {
+	JSONL_STORAGE_VERSION,
+	type JsonlCompactionPolicy,
+	type JsonlStorageHeader,
+	type JsonlStorageOptions,
+	resolveJsonlCompactionPolicy,
+} from "./types.ts";
 
 function splitCompleteLines(content: string): { lines: string[]; torn: boolean } {
 	if (content.endsWith("\n")) return { lines: content.slice(0, -1).split("\n"), torn: false };
@@ -44,6 +58,9 @@ export class JsonlStorage implements Storage {
 	readonly header: JsonlStorageHeader;
 	private backing: JsonlBacking;
 	private readonly storageState = new InMemoryStorageState();
+	private readonly compaction: JsonlCompactionPolicy;
+	/** Dead-byte ledger for the current v4 file; undefined while backing is legacy v3. */
+	private ledger: JsonlDeadByteLedger | undefined;
 	private commitQueue: Promise<void> = Promise.resolve();
 	private state: "open" | "closing" | "closed" = "open";
 	private closePromise: Promise<void> | undefined;
@@ -54,6 +71,7 @@ export class JsonlStorage implements Storage {
 		this.now = options.now ?? Date.now;
 		this.header = header;
 		this.backing = backing;
+		this.compaction = resolveJsonlCompactionPolicy(options.compaction);
 	}
 
 	static async create(
@@ -68,6 +86,11 @@ export class JsonlStorage implements Storage {
 			if (prepared.writes.length !== 0) await append(prepared.writes);
 		});
 		storage.storageState.applyValidated(prepared.writes);
+		const ledger = new JsonlDeadByteLedger(headerLineBytes(header));
+		if (prepared.writes.length !== 0) {
+			ledger.ingestTransaction(prepared.writes, jsonlUtf8Bytes(serializeJsonlTransaction(prepared.writes)) + 1);
+		}
+		storage.ledger = ledger;
 		return storage;
 	}
 
@@ -96,10 +119,11 @@ export class JsonlStorage implements Storage {
 			throw new Error(`Session ${header.id} uses unsupported storage version ${header.storageVersion}`);
 		}
 		const storage = new JsonlStorage(options, header, { kind: "v4" });
+		storage.ledger = new JsonlDeadByteLedger(headerLineBytes(header));
 		for (let index = 1; index < lines.length; index++) {
 			const line = lines[index]!;
 			try {
-				storage.replayCommitted(parseJsonlTransaction(line));
+				storage.replayCommitted(parseJsonlTransaction(line), jsonlUtf8Bytes(line) + 1);
 			} catch (error) {
 				throw new Error(`Invalid JSONL storage ${options.path}: line ${index + 1}`, { cause: error });
 			}
@@ -110,19 +134,22 @@ export class JsonlStorage implements Storage {
 				append(`${lines.join("\n")}\n`),
 			);
 		}
+		// Open-time threshold check runs after torn-tail repair; a failure propagates to the opener.
+		await storage.compactIfCrossed(context);
 		return storage;
 	}
 
 	private static async openLegacyV3(options: JsonlStorageOptions, context: Context): Promise<JsonlStorage> {
 		const source = await LegacyV3Source.read(options.fileSystem, options.path, context);
 		const storage = new JsonlStorage(options, { ...source.header, nextSeq: source.nextSeq }, { kind: "v3", source });
-		for await (const write of source.writes(context)) storage.replayCommitted([write]);
+		for await (const write of source.writes(context)) storage.replayCommitted([write], 0); // ledger is undefined for v3 backing
 		return storage;
 	}
 
-	private replayCommitted(writes: readonly CommittedWrite[]): void {
+	private replayCommitted(writes: readonly CommittedWrite[], lineBytes: number): void {
 		this.storageState.validateCommitted(writes);
 		this.storageState.applyValidated(writes);
+		this.ledger?.ingestTransaction(writes, lineBytes);
 	}
 
 	async commit(writes: Write[], context: Context): Promise<CommitResult> {
@@ -141,13 +168,49 @@ export class JsonlStorage implements Storage {
 		}
 		const prepared = this.storageState.prepareCommit(writes, this.now());
 		if (prepared.writes.length !== 0) {
+			const line = serializeJsonlTransaction(prepared.writes);
 			fileValue(
-				await this.fileSystem.appendFile(this.path, `${serializeJsonlTransaction(prepared.writes)}\n`, context),
+				await this.fileSystem.appendFile(this.path, `${line}\n`, context),
 				`Failed to append JSONL storage ${this.path}`,
 			);
+			this.ledger?.ingestTransaction(prepared.writes, jsonlUtf8Bytes(line) + 1);
 		}
 		const stats = this.storageState.applyValidated(prepared.writes);
+		// Terminal/outcome cleanup and value or list deletion are the reclamation points; superseding
+		// sets only grow dead bytes until one of these commits or the next open crosses the threshold.
+		if (prepared.writes.some((write) => (write.kind === "value" || write.kind === "list") && write.op === "delete")) {
+			await this.compactAfterCommit(context);
+		}
 		return { ...prepared.result, stats: this.withImportedUsage(stats) };
+	}
+
+	/**
+	 * Compact after a durable commit when the threshold is crossed. A rewrite failure must not fail
+	 * the already-durable commit: the original file stays valid and the unchanged accounting retries
+	 * on the next deletion commit or open.
+	 */
+	private async compactAfterCommit(context: Context): Promise<void> {
+		try {
+			await this.compactIfCrossed(context);
+		} catch {
+			// ponytail: silent retry-on-next-trigger; add telemetry when rewrite failures need observability
+		}
+	}
+
+	/** Rewrite only when the accounting crosses the policy threshold and something is reclaimable. */
+	private async compactIfCrossed(context: Context): Promise<void> {
+		const ledger = this.ledger;
+		if (ledger === undefined) return;
+		if (ledger.getAccounting().deadBytes === 0) return;
+		if (!shouldCompactJsonlFile(ledger.getAccounting(), this.compaction)) return;
+		const snapshot = buildJsonlSnapshot(this.storageState);
+		const header = { ...this.header, nextSeq: snapshot.nextSeq };
+		await publishJsonl(this.fileSystem, this.path, header, context, async (append) => {
+			for (const write of snapshot.writes) await append([write]);
+		});
+		// Swap header and accounting only after the atomic rename made the snapshot durable.
+		this.header.nextSeq = snapshot.nextSeq;
+		this.ledger = ledgerFromSnapshot(header, snapshot.writes);
 	}
 
 	/** Atomically upgrade legacy v3 backing and preserve the first caller write as a v4 transaction. */
@@ -172,13 +235,19 @@ export class JsonlStorage implements Storage {
 
 		const nextSeq = prepared.result.firstSeq + prepared.writes.length;
 		const upgradedHeader = { ...this.header, nextSeq };
+		const ledger = new JsonlDeadByteLedger(headerLineBytes(upgradedHeader));
 		await publishJsonl(this.fileSystem, this.path, upgradedHeader, context, async (append) => {
-			for await (const write of source.writes(context)) await append([write]);
+			for await (const write of source.writes(context)) {
+				await append([write]);
+				ledger.ingestTransaction([write], jsonlUtf8Bytes(serializeJsonlTransaction([write])) + 1);
+			}
 			await append(prepared.writes);
+			ledger.ingestTransaction(prepared.writes, jsonlUtf8Bytes(serializeJsonlTransaction(prepared.writes)) + 1);
 		});
 
 		const stats = this.storageState.applyValidated(prepared.writes);
 		this.backing = { kind: "v4" };
+		this.ledger = ledger;
 		// The first sequence belongs to the internal usage adjustment; return only caller-write sequences.
 		return {
 			...prepared.result,
@@ -245,10 +314,15 @@ export class JsonlStorage implements Storage {
 		return this.backing.kind === "v3";
 	}
 
-	/** Capture the first sequence a later source commit would use. */
-	captureForkNextSeq(_context: Context): Promise<number> {
+	/**
+	 * Capture the first sequence a later source commit would use and read the source file for a
+	 * fork with the commit queue held: capture and both fork read passes must observe one stable
+	 * file, because a concurrent commit's append or compaction rewrite between the passes would
+	 * make the boundary scan and the copy inconsistent.
+	 */
+	forkSourceRead<T>(read: (nextSeq: number) => Promise<T>): Promise<T> {
 		if (this.state !== "open") return Promise.reject(new Error("JsonlStorage is closed"));
-		const result = this.commitQueue.then(() => this.storageState.getNextSeq());
+		const result = this.commitQueue.then(() => read(this.storageState.getNextSeq()));
 		this.commitQueue = result.then(
 			() => undefined,
 			() => undefined,
