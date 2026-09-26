@@ -90,15 +90,11 @@ Treat this as separate packages:
 
 First reconcile whether every declared span is still wanted. If retained, implement it; if not, remove the unsupported public schema surface and correct `harness.md`. Do not mix telemetry with Context/RPC cancellation, which already has independent request-ID signaling.
 
-### S3 — Search
+### S3 — Search — completed
 
-**Evidence**
+Implemented per `harness.md` §2.8. `packages/agent/src/search/` ships the reconciled contracts (`SessionSearchService`, `SessionSearchSyncTarget`, `SearchIndexBatch`), the repository-driven `syncSessionSearch` catch-up utility with bounded ascending pages, generation-aware cursors, and the `createSessionSearchNotifier` debounced poke utility. `extractSearchableText` indexes message-entry text blocks only. `packages/session-backends/sqlite-node` ships the standalone SQLite FTS5 reference projection (`createSqliteSessionSearch({ path, databaseFactory })`) with its own schema (`search_sessions`, `search_cursors`, FTS5 `search_entries`), FTS5 availability probing, in-SQL `cwd` filtering before rank and `limit`, idempotent batch upserts, and monotonic cursor advancement. `SessionMetadata.storeGeneration` is persisted by the JSONL header (default `1`); the precise rewrite remains the only incrementing writer. No repository search methods were added; the SQLite README still advertises search only as this separate projection.
 
-`src/search/index.ts` exports a public `SessionSearchService` skeleton with `sync()`, `notify()`, and array-returning `searchEntries()`. `harness.md` §2.8 instead specifies a standalone service, separate catch-up/notify utilities, generation-aware cursors, and optional `AsyncIterable` entry search. There is no factory, sync utility, cursor store, projection, or source SQLite FTS implementation. At the audit baseline the SQLite README advertised nonexistent `createSqliteSessionSearch()` behavior; this audit corrected that README rather than treating the absent API as implemented.
-
-**Remaining boundary**
-
-Before implementation, replace or reconcile the draft public interface and decide metadata filtering (`cwd`), candidate restriction, or indexed metadata. Post-filtering after ranked `limit` is unsound. Then implement standalone catch-up and a separate SQLite FTS5 projection; do not add repository search methods.
+Deferred with the precise rewrite (§2.9): persisting and incrementing the generation from a rewrite that renumbers sequences.
 
 ### R11 — Schema migrations, activation-gated
 
@@ -204,7 +200,6 @@ Remaining cleanup:
 
 These are not blockers for the durable Harness:
 
-- standalone S3 search after its API decisions;
 - Accounts removal and revisioned Transcript production;
 - authenticated workspace/client authorization for the experimental local server;
 - private returned references, service flow control, multi-pane presentation, plugin kernel/reload completion, and version-skew negotiation;
@@ -228,7 +223,7 @@ The order is by data safety first, then dependencies. Independent tracks may pro
 7. **Telemetry, if retained:** reconcile schemas, then local instrumentation, then RPC propagation, then an optional exporter. RPC propagation follows the Remote Session/product-boundary decision.
 8. **WP08 — named-branch and streaming forks.** Implement the actionable handoff without reopening WP07 ownership or lifecycle decisions.
 9. **SQLite branch/query performance hardening.** Keep separate from completed WP07 ownership alignment and WP08 fork semantics; require benchmarks.
-10. **S3 search.** Resolve its API/filter/cursor decisions, then implement catch-up and the standalone FTS projection.
+10. **S3 search.** Completed: catch-up utilities and the standalone FTS5 projection are implemented (§2.8).
 11. **R11 migrations.** Activate immediately before the first incompatible stabilized durable schema change, not earlier.
 
 ## Stop conditions for roadmap accuracy
@@ -239,7 +234,6 @@ This inventory must be updated when any of these facts changes:
 - raw RemoteSession is either recommissioned or removed from the normative contract;
 - JSONL snapshot compaction lands;
 - telemetry schemas are implemented or removed;
-- S3’s public API is reconciled;
 - a durable format change activates R11;
 - WP08 lands or its fork contract changes;
 - the host-authority contract changes.

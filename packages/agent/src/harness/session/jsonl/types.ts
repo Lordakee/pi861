@@ -15,6 +15,11 @@ export interface JsonlStorageHeader {
 	legacyParentSessionPath?: string;
 	/** Sequence high-water mark written by snapshot rewrites. */
 	nextSeq?: number;
+	/**
+	 * Sequence-numbering generation, defaulting to 1 when absent. Only a precise rewrite that
+	 * renumbers sequences increments it; ordinary commits and snapshot rewrites preserve it.
+	 */
+	storeGeneration?: number;
 }
 
 /**
