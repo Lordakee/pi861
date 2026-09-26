@@ -339,6 +339,46 @@ export class InMemoryStorageState {
 		return query.limit === undefined ? rows : rows.slice(0, Math.max(0, query.limit));
 	}
 
+	/**
+	 * Current-state snapshot for snapshot rewrites: every entry, every usage row, each surviving
+	 * scalar value, and each surviving list element as an individual append. Original committed
+	 * sequences are preserved and ascending within each group. Read-only; backend state is unchanged.
+	 */
+	snapshotCommittedWrites(): CommittedWrite[] {
+		const writes: CommittedWrite[] = [];
+		for (const entry of this.entriesBySeq) writes.push({ kind: "entry", ...entry });
+		for (const row of [...this.usage.values()].sort((left, right) => left.seq - right.seq)) {
+			writes.push({ kind: "usage", ...row });
+		}
+		const scalars = [...this.scalarValues.values()].sort((left, right) => left.seq - right.seq);
+		for (const stored of scalars) {
+			writes.push({
+				kind: "value",
+				op: "set",
+				seq: stored.seq,
+				namespace: stored.address.namespace,
+				key: stored.address.key,
+				value: stored.value,
+			});
+		}
+		const appends = [...this.listValues.values()]
+			.flatMap((stored) =>
+				stored.elements.map(
+					(element): CommittedListAppendWrite => ({
+						kind: "list",
+						op: "append",
+						seq: element.seq,
+						namespace: stored.address.namespace,
+						key: stored.address.key,
+						value: element.value,
+					}),
+				),
+			)
+			.sort((left, right) => left.seq - right.seq);
+		writes.push(...appends);
+		return writes;
+	}
+
 	getStats(): SessionStats {
 		return this.stats;
 	}

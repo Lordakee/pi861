@@ -11,6 +11,7 @@ import { JsonlStorage } from "./storage.ts";
 import {
 	JSONL_FORMAT_VERSION,
 	JSONL_STORAGE_VERSION,
+	type JsonlCompactionOptions,
 	type JsonlSessionCreateOptions,
 	type JsonlSessionListOptions,
 	type JsonlSessionMetadata,
@@ -49,6 +50,7 @@ export class JsonlSessionRepo
 	private readonly fileSystem: FileSystem;
 	private readonly sessionsRootInput: string;
 	private readonly now: () => number;
+	private readonly compaction: JsonlCompactionOptions | undefined;
 	private readonly openSessions = new Map<string, JsonlStorage>();
 	private readonly pendingCreates = new Set<string>();
 	private closed = false;
@@ -58,6 +60,7 @@ export class JsonlSessionRepo
 		this.fileSystem = options.fileSystem;
 		this.sessionsRootInput = options.sessionsRoot;
 		this.now = options.now ?? Date.now;
+		this.compaction = options.compaction;
 	}
 
 	async create(options: JsonlSessionCreateOptions, context: Context): Promise<Session<JsonlSessionMetadata>> {
@@ -80,7 +83,12 @@ export class JsonlSessionRepo
 				cwd,
 				...(options.parentSessionId === undefined ? {} : { parentSessionId: options.parentSessionId }),
 			};
-			storage = await JsonlStorage.create({ fileSystem: this.fileSystem, path, now: this.now }, header, [], context);
+			storage = await JsonlStorage.create(
+				{ fileSystem: this.fileSystem, path, now: this.now, compaction: this.compaction },
+				header,
+				[],
+				context,
+			);
 			const info = fileValue(await this.fileSystem.fileInfo(path, context), `Failed to read session ${path}`);
 			return this.publishOpenSession(metadataFromHeader(header, path, info.mtimeMs), storage, key);
 		} catch (error) {
@@ -162,8 +170,6 @@ export class JsonlSessionRepo
 		let path: string | undefined;
 		let storage: JsonlStorage | undefined;
 		try {
-			const input = await this.resolveForkInput(source, sourceStorage, context);
-			path = await this.resolveNewSessionPath(cwd, createdAt, id, context);
 			const header: Omit<JsonlStorageHeader, "nextSeq"> = {
 				v: JSONL_FORMAT_VERSION,
 				kind: "header",
@@ -173,17 +179,37 @@ export class JsonlSessionRepo
 				cwd,
 				parentSessionId: source.id,
 			};
-			await runJsonlFork(
-				{
-					input,
-					fileSystem: this.fileSystem,
-					destinationPath: path,
-					destinationHeader: header,
-					fork: options,
-				},
+			const writeDestination = async (input: JsonlForkInput): Promise<string> => {
+				const destinationPath = await this.resolveNewSessionPath(cwd, createdAt, id, context);
+				await runJsonlFork(
+					{
+						input,
+						fileSystem: this.fileSystem,
+						destinationPath,
+						destinationHeader: header,
+						fork: options,
+					},
+					context,
+				);
+				return destinationPath;
+			};
+			if (sourceStorage === undefined) {
+				path = await writeDestination(await this.resolveForkInput(source, context));
+			} else if (sourceStorage.isLegacyV3()) {
+				throw new Error(
+					"Cannot fork an open legacy v3 JSONL session; commit a non-empty transaction to upgrade it to format 4 first",
+				);
+			} else {
+				// Capture the boundary and stream both fork passes with the source's commit queue held,
+				// so a concurrent commit cannot compact the source between capture and read.
+				path = await sourceStorage.forkSourceRead((nextSeq) =>
+					writeDestination({ kind: "open", metadata: source, nextSeq }),
+				);
+			}
+			storage = await JsonlStorage.open(
+				{ fileSystem: this.fileSystem, path, now: this.now, compaction: this.compaction },
 				context,
 			);
-			storage = await JsonlStorage.open({ fileSystem: this.fileSystem, path, now: this.now }, context);
 			const info = fileValue(await this.fileSystem.fileInfo(path, context), `Failed to read session ${path}`);
 			return this.publishOpenSession(metadataFromHeader(header, path, info.mtimeMs), storage, destinationKey);
 		} catch (error) {
@@ -296,20 +322,7 @@ export class JsonlSessionRepo
 		if (idExists) throw new Error(`Session already exists: ${id}`);
 	}
 
-	private async resolveForkInput(
-		source: JsonlSessionMetadata,
-		storage: JsonlStorage | undefined,
-		context: Context,
-	): Promise<JsonlForkInput> {
-		if (storage !== undefined) {
-			if (storage.isLegacyV3()) {
-				throw new Error(
-					"Cannot fork an open legacy v3 JSONL session; commit a non-empty transaction to upgrade it to format 4 first",
-				);
-			}
-			const nextSeq = await storage.captureForkNextSeq(context);
-			return { kind: "open", metadata: source, nextSeq };
-		}
+	private async resolveForkInput(source: JsonlSessionMetadata, context: Context): Promise<JsonlForkInput> {
 		if (await this.isLegacyV3ForkSource(source, context)) {
 			const normalized = await LegacyV3Source.read(this.fileSystem, source.path, context);
 			if (normalized.header.id !== source.id || normalized.header.cwd !== source.cwd) {
@@ -360,6 +373,7 @@ export class JsonlSessionRepo
 				fileSystem: this.fileSystem,
 				path: metadata.path,
 				now: this.now,
+				compaction: this.compaction,
 			},
 			context,
 		);

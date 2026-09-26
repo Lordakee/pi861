@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { BACKGROUND_CONTEXT, type Context } from "../../src/harness/context.ts";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
-import { JSONL_STORAGE_VERSION, JsonlSessionRepo } from "../../src/harness/session/jsonl/index.ts";
-import { sessionName, setValue } from "../../src/harness/session/values.ts";
+import {
+	JSONL_STORAGE_VERSION,
+	type JsonlCompactionOptions,
+	JsonlSessionRepo,
+} from "../../src/harness/session/jsonl/index.ts";
+import { deleteValue, sessionName, setValue, value } from "../../src/harness/session/values.ts";
 import { getOrThrow } from "../../src/harness/types.ts";
 import { createTempDir } from "./session-test-utils.ts";
 
@@ -85,6 +89,51 @@ describe("JsonlSessionRepo cwd-scoped lifecycle", () => {
 		expect(getOrThrow(await fileSystem.exists(publication.sourcePath, BACKGROUND_CONTEXT))).toBe(false);
 
 		await session.close(BACKGROUND_CONTEXT);
+		await repo.close(BACKGROUND_CONTEXT);
+	});
+
+	it("preserves session metadata and header fields across automatic compaction", async () => {
+		const fileSystem = new NodeExecutionEnv({ cwd: createTempDir() });
+		const compaction: JsonlCompactionOptions = { enabled: true, minBytes: 1, minDeadBytes: 1, deadRatio: 0 };
+		const repo = new JsonlSessionRepo({ fileSystem, sessionsRoot: "sessions", now: () => NOW, compaction });
+		const session = await repo.create(
+			{ id: "compacted", cwd: "/workspace", parentSessionId: "parent" },
+			BACKGROUND_CONTEXT,
+		);
+		const metadata = session.metadata;
+		const doomed = value<string>("test.doomed", "x");
+		const mutation = await session.beginMutation(BACKGROUND_CONTEXT);
+		await mutation.commit(
+			[setValue(sessionName, "kept"), setValue(doomed, "dead"), deleteValue(doomed)],
+			BACKGROUND_CONTEXT,
+		);
+		await mutation.end(BACKGROUND_CONTEXT);
+		await session.close(BACKGROUND_CONTEXT);
+
+		const reopened = await repo.open(metadata, BACKGROUND_CONTEXT);
+		expect(reopened.metadata).toMatchObject({
+			id: metadata.id,
+			createdAt: metadata.createdAt,
+			storageVersion: JSONL_STORAGE_VERSION,
+			cwd: metadata.cwd,
+			path: metadata.path,
+			parentSessionId: metadata.parentSessionId,
+		});
+		expect(await reopened.getName(BACKGROUND_CONTEXT)).toBe("kept");
+		await reopened.close(BACKGROUND_CONTEXT);
+
+		const lines = getOrThrow(await fileSystem.readTextLines(metadata.path, { maxLines: 2 }, BACKGROUND_CONTEXT));
+		expect(JSON.parse(lines[0]!)).toMatchObject({
+			v: 4,
+			kind: "header",
+			id: "compacted",
+			storageVersion: JSONL_STORAGE_VERSION,
+			createdAt: NOW,
+			cwd: "/workspace",
+			parentSessionId: "parent",
+			nextSeq: 4,
+		});
+		expect(JSON.parse(lines[1]!)).toMatchObject({ kind: "value", op: "set", seq: 1, namespace: "pi.session.name" });
 		await repo.close(BACKGROUND_CONTEXT);
 	});
 
