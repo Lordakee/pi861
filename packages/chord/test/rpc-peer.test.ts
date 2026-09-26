@@ -595,3 +595,37 @@ describe("loopback channels", () => {
 		expect(closed).toHaveLength(1);
 	});
 });
+
+describe("RPC peer input hardening (review findings)", () => {
+	test("constructor rejects non-strict-JSON metadata locally", () => {
+		const [left] = createLoopbackRpcChannels();
+		expect(() => createRpcPeer({ channel: left, metadata: { bad: undefined } as unknown as JsonValue })).toThrow(
+			TypeError,
+		);
+	});
+
+	test("revoked proxy args reject with rpc-malformed instead of throwing synchronously", async () => {
+		const { peerA } = await createPair();
+		const { proxy, revoke } = Proxy.revocable({ a: 1 }, {});
+		revoke();
+		await expect(peerA.call("method", [proxy] as unknown as JsonValue[])).rejects.toMatchObject({
+			code: "rpc-malformed",
+		});
+		await expect(peerA.notify("method", proxy as unknown as JsonValue)).rejects.toMatchObject({
+			code: "rpc-malformed",
+		});
+		await peerA.close();
+	});
+
+	test("loopback delivers borrowed references; real adapters serialize", async () => {
+		const { peerA, peerB } = await createPair();
+		peerB.register("echo", (args) => args[0]);
+		const payload = { marker: Math.random() };
+		const result = await peerA.call("echo", [payload]);
+		// The loopback transport passes frames by reference (Chord borrowed-values convention).
+		// Handlers must not mutate arguments; serialization happens in real adapters.
+		expect(result).toBe(payload);
+		await peerA.close();
+		await peerB.close();
+	});
+});

@@ -130,6 +130,9 @@ export class RpcPeerImpl implements RpcPeer {
 	#sendChain: Promise<void> = Promise.resolve();
 
 	constructor(options: RpcPeerOptions) {
+		if (options.metadata !== undefined && !isJsonValue(options.metadata)) {
+			throw new TypeError("RpcPeerOptions.metadata must be strict JSON");
+		}
 		this.#channel = options.channel;
 		this.#maxMessageBytes = options.maxMessageBytes;
 		this.#metadata = options.metadata;
@@ -160,7 +163,14 @@ export class RpcPeerImpl implements RpcPeer {
 	call(method: string, args: readonly JsonValue[], context?: Context): Promise<JsonValue | undefined> {
 		if (this.#closed) return Promise.reject(disconnectedError());
 		if (method.length === 0) return Promise.reject(new TypeError("RPC method name must not be empty"));
-		if (!Array.isArray(args) || !isJsonValue(args)) {
+		let argsAreJson = false;
+		try {
+			argsAreJson = Array.isArray(args) && isJsonValue(args);
+		} catch {
+			// Revoked proxies and similar pathological inputs throw during inspection; treat as malformed.
+			argsAreJson = false;
+		}
+		if (!argsAreJson) {
 			return Promise.reject(new RpcPeerError("rpc-malformed", "RPC arguments are not strict JSON"));
 		}
 		const signal = context?.abortSignal;
@@ -216,7 +226,14 @@ export class RpcPeerImpl implements RpcPeer {
 	notify(method: string, payload: JsonValue): Promise<void> {
 		if (this.#closed) return Promise.reject(disconnectedError());
 		if (method.length === 0) return Promise.reject(new TypeError("RPC method name must not be empty"));
-		if (!isJsonValue(payload)) {
+		let payloadIsJson = false;
+		try {
+			payloadIsJson = isJsonValue(payload);
+		} catch {
+			// Revoked proxies and similar pathological inputs throw during inspection; treat as malformed.
+			payloadIsJson = false;
+		}
+		if (!payloadIsJson) {
 			return Promise.reject(new RpcPeerError("rpc-malformed", "RPC notification payload is not strict JSON"));
 		}
 		return this.#enqueueSend({ version: RPC_PROTOCOL_VERSION, type: "notification", method, payload });
