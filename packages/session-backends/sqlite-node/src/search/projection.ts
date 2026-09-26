@@ -132,7 +132,7 @@ class SqliteSessionSearchProjection implements SqliteSessionSearch {
 		return sql`SELECT session_id FROM search_entries
 			WHERE ${joinSqlFragments(conditions, " AND ")}
 			GROUP BY session_id
-			ORDER BY MIN(rank)${limit}`
+			ORDER BY MIN(rank), session_id${limit}`
 			.all<{ session_id: string }>(this.db)
 			.map((row) => ({ sessionId: row.session_id }));
 	}

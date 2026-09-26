@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { SearchIndexBatch } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { createNodeSqliteFactory, createSqliteSessionSearch } from "../src/index.ts";
+import type { SqliteDatabase, SqliteDatabaseFactory } from "../src/sqlite/types.ts";
 
 function fts5Available(): boolean {
 	try {
@@ -308,6 +309,37 @@ describe.skipIf(!fts5Available())("SqliteSessionSearch projection", () => {
 			} finally {
 				await search.close();
 			}
+		});
+	});
+});
+
+describe("createSqliteSessionSearch without FTS5", () => {
+	it("fails with a clear error and closes the handle when the SQLite build lacks FTS5", async () => {
+		await withTempDir(async (directory) => {
+			let closed = false;
+			const db: SqliteDatabase = {
+				exec: (statement: string): void => {
+					if (statement.includes("USING fts5")) {
+						throw new Error("no such module: fts5");
+					}
+				},
+				prepare: () => {
+					throw new Error("unexpected prepare call");
+				},
+				transaction: (callback) => callback(),
+				close: () => {
+					closed = true;
+				},
+			};
+			const databaseFactory: SqliteDatabaseFactory = {
+				open: async () => db,
+				openExisting: async () => db,
+				openReadOnly: async () => db,
+			};
+			await expect(
+				createSqliteSessionSearch({ path: join(directory, "search.sqlite"), databaseFactory }),
+			).rejects.toThrow(/FTS5 is not available/);
+			expect(closed).toBe(true);
 		});
 	});
 });
