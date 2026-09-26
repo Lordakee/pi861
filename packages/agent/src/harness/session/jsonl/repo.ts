@@ -30,6 +30,8 @@ function metadataFromHeader(header: JsonlStorageHeader, path: string, modifiedAt
 		...(header.legacyParentSessionPath === undefined
 			? {}
 			: { legacyParentSessionPath: header.legacyParentSessionPath }),
+		// Generation 1 is implied; only a precise rewrite persists a higher generation.
+		...(header.storeGeneration === undefined ? {} : { storeGeneration: header.storeGeneration }),
 	};
 }
 

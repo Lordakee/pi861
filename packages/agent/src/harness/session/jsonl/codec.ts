@@ -41,6 +41,7 @@ export function isJsonlStorageHeader(value: unknown): value is JsonlStorageHeade
 		isSafeIntegerAtLeast(value.storageVersion, 1) &&
 		isSafeIntegerAtLeast(value.createdAt, 0) &&
 		(value.nextSeq === undefined || isSafeIntegerAtLeast(value.nextSeq, 1)) &&
+		(value.storeGeneration === undefined || isSafeIntegerAtLeast(value.storeGeneration, 1)) &&
 		(value.parentSessionId === undefined || typeof value.parentSessionId === "string") &&
 		(value.legacyParentSessionPath === undefined || typeof value.legacyParentSessionPath === "string")
 	);

@@ -474,6 +474,12 @@ export interface SessionMetadata {
 	id: string;
 	createdAt: number;
 	storageVersion: number;
+	/**
+	 * Generation of this store's sequence numbering. Backends that can renumber sequences (the
+	 * precise rewrite, §2.9 harness.md) persist and increment it; absent means generation 1.
+	 * Search cursors key on `(sessionId, storeGeneration)` so a renumbered store re-indexes.
+	 */
+	storeGeneration?: number;
 	cwd?: string;
 	parentSessionId?: string;
 	legacyParentSessionPath?: string;
