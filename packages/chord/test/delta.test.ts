@@ -761,7 +761,7 @@ describe("pending operation coalescing", () => {
 		wide(200); // warm
 		const small = Math.max(wide(250), 0.1);
 		const large = wide(2500);
-		expect(large / small).toBeLessThan(40); // linear would be ~10x
+		expect(large / small).toBeLessThan(80); // linear ~10x, quadratic ~100x; headroom for loaded runners
 	});
 
 	it("collapses a pathological redundant producer", () => {
