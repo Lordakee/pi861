@@ -1,5 +1,6 @@
 import { FacetKernel } from "./facets/host.ts";
 import { disposeLoadedFacets } from "./facets/loader.ts";
+import { RpcPeerImpl } from "./rpc.ts";
 import { RemoteServiceBindingImpl } from "./services/consumer.ts";
 import { MutableReplicatedStateImpl } from "./services/state.ts";
 import type {
@@ -12,6 +13,8 @@ import type {
 	RemoteServiceBinding,
 	RemoteServiceBindingOptions,
 	RemoteServiceContract,
+	RpcPeer,
+	RpcPeerOptions,
 	Service,
 } from "./types.ts";
 
@@ -84,6 +87,13 @@ export function defineService(id: string, options?: { readonly local?: boolean }
 export function createRemoteServiceBinding(options: RemoteServiceBindingOptions): RemoteServiceBinding {
 	return new RemoteServiceBindingImpl(options);
 }
+
+/** Create a symmetric RPC peer over one application-supplied duplex channel. */
+export function createRpcPeer(options: RpcPeerOptions): RpcPeer {
+	return new RpcPeerImpl(options);
+}
+
+export { createLoopbackRpcChannels } from "./rpc-loopback.ts";
 
 export function replicatedState<T extends object>(initial: T): MutableReplicatedState<T> {
 	return new MutableReplicatedStateImpl(initial);

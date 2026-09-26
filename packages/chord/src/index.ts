@@ -4,13 +4,17 @@
 export {
 	combineFacetLoaders,
 	createFacetHost,
+	createLoopbackRpcChannels,
 	createRemoteServiceBinding,
+	createRpcPeer,
 	createStaticFacetLoader,
 	defineFacet,
 	defineService,
 	replicatedState,
 } from "./api.ts";
 export { isJsonValue } from "./json.ts";
+export { parseRpcEnvelope, RPC_METADATA_CONTEXT_KEY, RpcPeerError } from "./rpc.ts";
+export type { LoopbackRpcChannel } from "./rpc-loopback.ts";
 export {
 	isRemoteServiceErrorCode,
 	REMOTE_SERVICE_ERROR_CODES,
@@ -65,6 +69,19 @@ export type {
 	RemoteServiceTransport,
 	ReplicatedState,
 	ReplicatedStateDelivery,
+	RpcCancelEnvelope,
+	RpcChannel,
+	RpcEnvelope,
+	RpcError,
+	RpcErrorCode,
+	RpcHandler,
+	RpcHelloEnvelope,
+	RpcNotificationEnvelope,
+	RpcNotificationListener,
+	RpcPeer,
+	RpcPeerOptions,
+	RpcRequestEnvelope,
+	RpcResponseEnvelope,
 	Service,
 	ServiceCall,
 	ServiceCatalogueEntry,
