@@ -8,6 +8,9 @@ export default mergeConfig(
 			globals: true,
 			environment: "node",
 			testTimeout: 30000,
+			// Cap file parallelism so spawn-heavy integration tests keep CPU headroom
+			// on small runner sizes; per-file tests still run concurrently within workers.
+			maxWorkers: 2,
 			// Tests run offline by default; opt in with allowNetwork() from test/test-network-env.ts.
 			env: { PI_OFFLINE: "1" },
 			unstubEnvs: true,
