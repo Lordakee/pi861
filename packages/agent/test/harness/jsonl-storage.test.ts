@@ -453,6 +453,43 @@ describe("JsonlStorage torn tail", () => {
 			await reopened.close(BACKGROUND_CONTEXT);
 		});
 
+		it("preserves the storeGeneration header field across snapshot rewrites", async () => {
+			const fileSystem = new NodeExecutionEnv({ cwd: createTempDir() });
+			const options = { fileSystem, path: "session.jsonl", now: () => NOW };
+			const pending = storedValues.value<string>("test.pending", "x");
+			const doomed = storedValues.value<string>("test.doomed", "y");
+			const storage = await JsonlStorage.create(
+				options,
+				{ ...header("compact-generation"), storeGeneration: 3 },
+				[],
+				BACKGROUND_CONTEXT,
+			);
+			await storage.commit(
+				[entryWrite("root"), storedValues.setValue(doomed, "first"), storedValues.setValue(pending, "payload")],
+				BACKGROUND_CONTEXT,
+			);
+			await storage.commit([storedValues.setValue(doomed, "second")], BACKGROUND_CONTEXT);
+			await storage.commit([storedValues.deleteValue(pending)], BACKGROUND_CONTEXT);
+			await storage.close(BACKGROUND_CONTEXT);
+
+			// Open-time compaction must carry storeGeneration into the rewritten header.
+			const reopened = await JsonlStorage.open({ ...options, compaction: always }, BACKGROUND_CONTEXT);
+			expect(parseLines(await readContent(fileSystem, "session.jsonl"))[0]).toMatchObject({
+				id: "compact-generation",
+				storeGeneration: 3,
+			});
+
+			// A post-open delete commit that triggers another rewrite must preserve it too.
+			const other = storedValues.value<string>("test.other", "z");
+			await reopened.commit([storedValues.setValue(other, "v")], BACKGROUND_CONTEXT);
+			await reopened.commit([storedValues.deleteValue(doomed)], BACKGROUND_CONTEXT);
+			await reopened.close(BACKGROUND_CONTEXT);
+			expect(parseLines(await readContent(fileSystem, "session.jsonl"))[0]).toMatchObject({
+				id: "compact-generation",
+				storeGeneration: 3,
+			});
+		});
+
 		it("does not rewrite below thresholds or when disabled", async () => {
 			const fileSystem = new NodeExecutionEnv({ cwd: createTempDir() });
 			const options = { fileSystem, path: "session.jsonl", now: () => NOW };
