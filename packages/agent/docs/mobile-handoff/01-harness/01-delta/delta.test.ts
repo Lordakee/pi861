@@ -254,10 +254,24 @@ describe("dead-op elimination", () => {
 			t.flush();
 			return performance.now() - started;
 		};
-		wide(200);                                    // warm
-		const small = Math.max(wide(250), 0.1);
-		const large = wide(2500);
-		expect(large / small).toBeLessThan(80); // linear ~10x, quadratic ~100x; headroom for loaded runners
+		// Average each size over >=5ms of sampling: sub-millisecond single runs sit at the
+		// timer noise floor and make the ratio meaningless on warm JITs, while absolute
+		// floors would mask a real quadratic blowup.
+		const measure = (n: number): number => {
+			const started = performance.now();
+			let runs = 0;
+			let elapsed = 0;
+			while (elapsed < 5) {
+				wide(n);
+				runs += 1;
+				elapsed = performance.now() - started;
+			}
+			return elapsed / runs;
+		};
+		wide(200); // warm
+		const small = Math.max(measure(250), 0.01);
+		const large = Math.max(measure(2500), 0.01);
+		expect(large / small).toBeLessThan(80); // linear ~10x, quadratic ~100x
 	});
 
 	it("collapses a pathological redundant producer", () => {
