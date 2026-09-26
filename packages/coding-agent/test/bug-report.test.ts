@@ -23,6 +23,8 @@ describe("bug report prompt", () => {
 		const previousKeybindings = getKeybindings();
 		const keybindings = new KeybindingsManager();
 		setKeybindings(keybindings);
+		// The vitest config forces PI_OFFLINE=1 for all coding-agent tests; /bug requires online mode.
+		vi.stubEnv("PI_OFFLINE", "");
 		try {
 			const ui = new TuiMainScreen(new VirtualTerminal());
 			const editorContainer = new Container();
@@ -43,6 +45,9 @@ describe("bug report prompt", () => {
 				showError: vi.fn(),
 			});
 
+			// reportBug is async and mounts the description editor after its first await;
+			// wait for it to appear before driving input.
+			await vi.waitFor(() => expect(editorContainer.children[0]).toBeInstanceOf(ExtensionEditorComponent));
 			const descriptionEditor = editorContainer.children[0];
 			expect(descriptionEditor).toBeInstanceOf(ExtensionEditorComponent);
 			if (!(descriptionEditor instanceof ExtensionEditorComponent)) throw new Error("Missing description editor");
