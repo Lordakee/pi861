@@ -1,5 +1,7 @@
 # Development Rules
 
+> **Fork workflow:** All development tasks follow [PROJECT_RULES.md](PROJECT_RULES.md) — codex 生成开发计划 → 多子代理并行开发 → 独立子代理审核.
+
 ## Conversational Style
 
 - Keep answers short and concise
