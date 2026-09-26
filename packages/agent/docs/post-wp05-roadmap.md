@@ -33,18 +33,9 @@ WP07 completed SQLite host-ownership alignment and live-source fork support afte
 
 ## Required missing functionality and contract contradictions
 
-### R12 — Session-wide Harness watch
+### R12 — Session-wide Harness watch (implemented)
 
-**Evidence**
-
-- `AgentHarness.watchSession(context)` is public in `src/harness/agent-harness.ts`.
-- `Harness.watchSession()` throws `SliceNotImplemented("watchSession")` in `src/harness/runtime/harness.ts`.
-- `SessionSnapshot` currently contains only `{ lanes: LaneInfo[]; faulted: boolean }`.
-- Lane watch, event buffering, delivery-tail barriers, and `resnapshot()` already exist in `src/harness/events.ts` and `src/harness/runtime/lane.ts`.
-
-**Remaining boundary**
-
-Define one coherent capture and fold for dynamic lane inventory and fault state. Decide whether the intentionally small `SessionSnapshot` stays small or gains session metadata/stats/global configuration. Then implement snapshot-before-events, lane creation, resnapshot, listener reentrancy, close/fault behavior, and a session reducer if event-only replication is promised.
+`watchSession` is implemented: registration and snapshot capture run inside one Session mutation-line job (snapshot-before-events), lane inventory and fault state fold through the pure `reduceSessionSnapshot` reducer (exported from the package root and `harness/runtime/session-reducer`), `resnapshot()` reuses the capture path under the mutation line, and close/fault behavior follows the shared event-bus sealing. `SessionSnapshot` intentionally stays `{ lanes: LaneInfo[]; faulted: boolean }`; see `harness.md` §5.4 for the normative contract.
 
 **Dependency**
 
@@ -233,7 +224,7 @@ The order is by data safety first, then dependencies. Independent tracks may pro
 3. **Client watch/subscription staleness** and **repository lifecycle contract.** Small independent correctness packages; complete them before expanding server/worker lifecycle semantics. The lifecycle package must also address Memory's fail-fast repository close.
 4. **[Mobile Harness handoff](mobile-handoff/README.md).** Follow its numbered prerequisites through scoped storage, tool output, and assistant output; preserve all recovery boundaries and land deterministic amplification measurements.
 5. **JSONL snapshot compaction.** Implement the already-normative physical reclamation path and metrics for remaining session-scoped history.
-6. **R12 session-wide watch.** Complete the only Harness method stub before building revisioned Transcript/session-wide remote observation.
+6. **R12 session-wide watch.** Implemented; the former stub is closed.
 7. **Telemetry, if retained:** reconcile schemas, then local instrumentation, then RPC propagation, then an optional exporter. RPC propagation follows the Remote Session/product-boundary decision.
 8. **WP08 — named-branch and streaming forks.** Implement the actionable handoff without reopening WP07 ownership or lifecycle decisions.
 9. **SQLite branch/query performance hardening.** Keep separate from completed WP07 ownership alignment and WP08 fork semantics; require benchmarks.
