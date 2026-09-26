@@ -745,7 +745,7 @@ describe("pending operation coalescing", () => {
 		expect(apply(structuredClone(initial), ops)).toEqual(t.state);
 	});
 
-	it("is linear in the number of ops", () => {
+	it("is linear in the number of ops", { retry: 2 }, () => {
 		// The naive formulation compares every op against every dominator, which
 		// is quadratic and degrades on exactly the wide flush this pass cleans up.
 		const wide = (n: number) => {

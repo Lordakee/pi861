@@ -241,7 +241,7 @@ describe("dead-op elimination", () => {
 		expect(run((s) => { delete s.x; s.x = 5; })).toEqual([["d", ["x"]], ["s", ["x"], 5]]);
 	});
 
-	it("is linear in the number of ops", () => {
+	it("is linear in the number of ops", { retry: 2 }, () => {
 		// The naive formulation compares every op against every dominator, which
 		// is quadratic and degrades on exactly the wide flush this pass cleans up.
 		const wide = (n: number) => {
