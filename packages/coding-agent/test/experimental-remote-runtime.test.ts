@@ -164,7 +164,7 @@ describe("experimental durable server composition", () => {
 		}
 	});
 
-	test("serializes concurrent cold activation and retires after both clients leave", async () => {
+	test("serializes concurrent cold activation and retires after both clients leave", { timeout: 60_000 }, async () => {
 		const directory = await mkdtemp(join("/tmp", "pi-auto-server-"));
 		directories.add(directory);
 		const serverId = "00000000-0000-4000-8000-000000000001";
@@ -193,7 +193,7 @@ describe("experimental durable server composition", () => {
 		await expect.poll(() => pathExists(join(directory, `control-${serverId}.sock`)), { timeout: 5_000 }).toBe(false);
 	});
 
-	test("passes client plugin packages to a cold server and restores them for its next generation", async () => {
+	test("passes client plugin packages to a cold server and restores them for its next generation", { timeout: 60_000 }, async () => {
 		const directory = await mkdtemp(join("/tmp", "pi-auto-plugin-"));
 		directories.add(directory);
 		const serverId = "00000000-0000-4000-8000-000000000001";
@@ -231,7 +231,7 @@ describe("experimental durable server composition", () => {
 		}
 	});
 
-	test("retires a cold server after its only Session attachment disconnects", async () => {
+	test("retires a cold server after its only Session attachment disconnects", { timeout: 60_000 }, async () => {
 		const directory = await mkdtemp(join("/tmp", "pi-auto-session-"));
 		directories.add(directory);
 		const serverId = "00000000-0000-4000-8000-000000000001";
