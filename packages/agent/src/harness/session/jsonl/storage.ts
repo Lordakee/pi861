@@ -317,9 +317,8 @@ export class JsonlStorage implements Storage {
 	/**
 	 * Capture the first sequence a later source commit would use and read the source file for a
 	 * fork with the commit queue held: capture and both fork read passes must observe one stable
-	 * file, because a concurrent commit's compaction rewrite orders surviving writes by group
-	 * (entries, usage, scalars, appends) rather than by sequence, which would break the fork's
-	 * boundary scan.
+	 * file, because a concurrent commit's append or compaction rewrite between the passes would
+	 * make the boundary scan and the copy inconsistent.
 	 */
 	forkSourceRead<T>(read: (nextSeq: number) => Promise<T>): Promise<T> {
 		if (this.state !== "open") return Promise.reject(new Error("JsonlStorage is closed"));

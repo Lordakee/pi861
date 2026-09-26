@@ -53,6 +53,8 @@ export class JsonlSessionRepo
 	private readonly compaction: JsonlCompactionOptions | undefined;
 	private readonly openSessions = new Map<string, JsonlStorage>();
 	private readonly pendingCreates = new Set<string>();
+	/** In-flight opens by session key, so concurrent opens serialize instead of racing. */
+	private readonly pendingOpens = new Map<string, Promise<void>>();
 	private closed = false;
 	private closePromise: Promise<void> | undefined;
 
@@ -104,6 +106,19 @@ export class JsonlSessionRepo
 		this.assertOpen();
 		const key = this.sessionKey(metadata.cwd, metadata.id);
 		if (this.openSessions.has(key)) throw new Error(`Session is already open: ${metadata.id}`);
+		// Serialize opens of one session: open-time compaction rewrites ${path}.tmp, so overlapping
+		// opens would interleave writes to the same temporary file.
+		while (!this.openSessions.has(key) && this.pendingOpens.has(key)) {
+			await this.pendingOpens.get(key);
+		}
+		if (this.openSessions.has(key)) throw new Error(`Session is already open: ${metadata.id}`);
+		let settle: () => void = () => {};
+		this.pendingOpens.set(
+			key,
+			new Promise<void>((resolve) => {
+				settle = resolve;
+			}),
+		);
 		let storage: JsonlStorage | undefined;
 		try {
 			storage = await this.loadStorage(metadata, context);
@@ -111,6 +126,9 @@ export class JsonlSessionRepo
 		} catch (error) {
 			await storage?.close(context);
 			throw error;
+		} finally {
+			this.pendingOpens.delete(key);
+			settle();
 		}
 	}
 

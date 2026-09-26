@@ -696,6 +696,131 @@ describe("JsonlStorage torn tail", () => {
 			await repo.close(BACKGROUND_CONTEXT);
 		});
 
+		it("compacts interleaved rounds into a sequence-ordered snapshot that reopens", async () => {
+			const fileSystem = new NodeExecutionEnv({ cwd: createTempDir() });
+			const options = {
+				fileSystem,
+				path: "session.jsonl",
+				now: () => NOW,
+				compaction: always,
+			};
+			const doomed = storedValues.value<string>("test.doomed", "x");
+			const storage = await JsonlStorage.create(options, header("compact-interleaved"), [], BACKGROUND_CONTEXT);
+			const ids = ["first", "second", "third"];
+			let parent: string | null = null;
+			for (const id of ids) {
+				await storage.commit(
+					[
+						entryWrite(id, parent),
+						usageWrite(`usage-${id}`),
+						storedValues.setValue(storedValues.branchTip("main"), id),
+					],
+					BACKGROUND_CONTEXT,
+				);
+				parent = id;
+			}
+			await storage.commit([storedValues.setValue(doomed, "x")], BACKGROUND_CONTEXT);
+			await storage.commit([storedValues.deleteValue(doomed)], BACKGROUND_CONTEXT);
+			await storage.close(BACKGROUND_CONTEXT);
+
+			// Reopen must succeed: the rewrite keeps every surviving write in one ascending sequence.
+			const reopened = await JsonlStorage.open(options, BACKGROUND_CONTEXT);
+			expect(recordSummary(await readContent(fileSystem, "session.jsonl"))).toEqual([
+				{
+					kind: "header",
+					op: undefined,
+					seq: undefined,
+					namespace: undefined,
+					key: undefined,
+					id: "compact-interleaved",
+				},
+				...ids.flatMap((id, index) => {
+					const seq = 3 * index + 1;
+					return [
+						{ kind: "entry", op: undefined, seq, namespace: undefined, key: undefined, id },
+						{
+							kind: "usage",
+							op: undefined,
+							seq: seq + 1,
+							namespace: undefined,
+							key: undefined,
+							id: `usage-${id}`,
+						},
+					];
+				}),
+				// Only the last branch-tip set survives; the surviving write keeps its sequence (9).
+				{
+					kind: "value",
+					op: "set",
+					seq: 9,
+					namespace: "pi.branch.tip",
+					key: "main",
+					id: undefined,
+				},
+			]);
+			expect((await reopened.getEntries(ids, BACKGROUND_CONTEXT)).get("third")).toMatchObject({
+				parentId: "second",
+				seq: 7,
+			});
+			expect((await reopened.scanUsage({ order: "asc" }, BACKGROUND_CONTEXT)).map(({ id }) => id)).toEqual([
+				"usage-first",
+				"usage-second",
+				"usage-third",
+			]);
+			expect(await reopened.getValue(storedValues.branchTip("main"), BACKGROUND_CONTEXT)).toMatchObject({
+				value: "third",
+				seq: 9,
+			});
+			expect(await reopened.getStats(BACKGROUND_CONTEXT)).toMatchObject({ messageCount: 3 });
+			expect(await reopened.commit([], BACKGROUND_CONTEXT)).toMatchObject({ firstSeq: 12 });
+			await reopened.close(BACKGROUND_CONTEXT);
+		});
+
+		it("forks a session compacted after an early scalar without sequence reordering errors", async () => {
+			const fileSystem = new NodeExecutionEnv({ cwd: createTempDir() });
+			const repo = new JsonlSessionRepo({
+				fileSystem,
+				sessionsRoot: "sessions",
+				now: () => NOW,
+				compaction: always,
+			});
+			const session = await repo.create({ id: "source", cwd: "/workspace" }, BACKGROUND_CONTEXT);
+			const doomed = storedValues.value<string>("test.doomed", "x");
+			// The session-name scalar at sequence 1 must sort before the later entry when the rewrite fires.
+			const seed = await session.beginMutation(BACKGROUND_CONTEXT);
+			await seed.commit([storedValues.setValue(storedValues.sessionName, "seed")], BACKGROUND_CONTEXT);
+			await seed.end(BACKGROUND_CONTEXT);
+			const mutation = await session.beginMutation(BACKGROUND_CONTEXT);
+			await mutation.commit(
+				[
+					entryWrite("root"),
+					storedValues.setValue(storedValues.branchTip("main"), "root"),
+					storedValues.setValue(doomed, "x"),
+					storedValues.deleteValue(doomed),
+				],
+				BACKGROUND_CONTEXT,
+			);
+			await mutation.end(BACKGROUND_CONTEXT);
+
+			const openFork = await repo.fork(session.metadata, { id: "fork-open", scope: "tree" }, BACKGROUND_CONTEXT);
+			expect(recordSummary(await readContent(fileSystem, openFork.metadata.path)).slice(1)).toEqual([
+				{ kind: "value", op: "set", seq: 1, namespace: "pi.session.name", key: "", id: undefined },
+				{ kind: "entry", op: undefined, seq: 2, namespace: undefined, key: undefined, id: "root" },
+				{ kind: "value", op: "set", seq: 3, namespace: "pi.branch.tip", key: "main", id: undefined },
+			]);
+			await openFork.close(BACKGROUND_CONTEXT);
+			await session.close(BACKGROUND_CONTEXT);
+
+			const closedFork = await repo.fork(session.metadata, { id: "fork-closed", scope: "tree" }, BACKGROUND_CONTEXT);
+			expect(await closedFork.getName(BACKGROUND_CONTEXT)).toBe("seed");
+			expect(await closedFork.getValue(storedValues.branchTip("main"), BACKGROUND_CONTEXT)).toMatchObject({
+				value: "root",
+				seq: 3,
+			});
+			await closedFork.close(BACKGROUND_CONTEXT);
+			await repo.close(BACKGROUND_CONTEXT);
+		});
+
 		it("holds queued commits until an in-progress fork source read completes", async () => {
 			const fileSystem = new NodeExecutionEnv({ cwd: createTempDir() });
 			const options = {

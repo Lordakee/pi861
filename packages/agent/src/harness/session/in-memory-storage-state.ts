@@ -342,7 +342,8 @@ export class InMemoryStorageState {
 	/**
 	 * Current-state snapshot for snapshot rewrites: every entry, every usage row, each surviving
 	 * scalar value, and each surviving list element as an individual append. Original committed
-	 * sequences are preserved and ascending within each group. Read-only; backend state is unchanged.
+	 * sequences are preserved and the result is globally ascending by sequence.
+	 * Read-only; backend state is unchanged.
 	 */
 	snapshotCommittedWrites(): CommittedWrite[] {
 		const writes: CommittedWrite[] = [];
@@ -376,7 +377,9 @@ export class InMemoryStorageState {
 			)
 			.sort((left, right) => left.seq - right.seq);
 		writes.push(...appends);
-		return writes;
+		// Sequences are unique across kinds, so a global sort interleaves the per-kind groups
+		// into one ascending sequence, as replay validation requires.
+		return writes.sort((left, right) => left.seq - right.seq);
 	}
 
 	getStats(): SessionStats {

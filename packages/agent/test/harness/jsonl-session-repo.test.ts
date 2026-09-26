@@ -222,6 +222,53 @@ describe("JsonlSessionRepo cwd-scoped lifecycle", () => {
 		await repo.close(BACKGROUND_CONTEXT);
 	});
 
+	it("serializes concurrent opens of one over-threshold session", async () => {
+		const fileSystem = new NodeExecutionEnv({ cwd: createTempDir() });
+		// Seed dead bytes with default (disabled-for-tiny-files) policy so only the opening repo compacts.
+		const seeding = new JsonlSessionRepo({ fileSystem, sessionsRoot: "sessions", now: () => NOW });
+		const session = await seeding.create({ id: "concurrent-open", cwd: "/workspace" }, BACKGROUND_CONTEXT);
+		const metadata = session.metadata;
+		const doomed = value<string>("test.doomed", "x");
+		const mutation = await session.beginMutation(BACKGROUND_CONTEXT);
+		await mutation.commit(
+			[setValue(sessionName, "kept"), setValue(doomed, "x"), deleteValue(doomed)],
+			BACKGROUND_CONTEXT,
+		);
+		await mutation.end(BACKGROUND_CONTEXT);
+		await session.close(BACKGROUND_CONTEXT);
+		await seeding.close(BACKGROUND_CONTEXT);
+
+		const always: JsonlCompactionOptions = { enabled: true, minBytes: 1, minDeadBytes: 1, deadRatio: 0 };
+		const repo = new JsonlSessionRepo({
+			fileSystem,
+			sessionsRoot: "sessions",
+			now: () => NOW,
+			compaction: always,
+		});
+		const results = await Promise.allSettled([
+			repo.open(metadata, BACKGROUND_CONTEXT),
+			repo.open(metadata, BACKGROUND_CONTEXT),
+		]);
+
+		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+		const rejected = results.find((result) => result.status === "rejected");
+		expect(rejected?.status).toBe("rejected");
+		if (rejected?.status === "rejected") expect(String(rejected.reason)).toMatch(/already open/);
+		for (const result of results) {
+			if (result.status === "fulfilled") {
+				expect(await result.value.getName(BACKGROUND_CONTEXT)).toBe("kept");
+				await result.value.close(BACKGROUND_CONTEXT);
+			}
+		}
+
+		// The overlapping open-time compactions left a valid file and no staged temporary behind.
+		const reopened = await repo.open(metadata, BACKGROUND_CONTEXT);
+		expect(await reopened.getName(BACKGROUND_CONTEXT)).toBe("kept");
+		await reopened.close(BACKGROUND_CONTEXT);
+		expect(getOrThrow(await fileSystem.exists(`${metadata.path}.tmp`, BACKGROUND_CONTEXT))).toBe(false);
+		await repo.close(BACKGROUND_CONTEXT);
+	});
+
 	it("allows the same id to be active in different working directories", async () => {
 		const fileSystem = new NodeExecutionEnv({ cwd: createTempDir() });
 		const repo = new JsonlSessionRepo({ fileSystem, sessionsRoot: "sessions", now: () => NOW });
