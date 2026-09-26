@@ -1,5 +1,12 @@
 import type { JsonValue } from "./types.ts";
 
+const encoder = new TextEncoder();
+
+/** Byte length of the JSON encoding of one strict-JSON value. */
+export function jsonByteLength(value: JsonValue): number {
+	return encoder.encode(JSON.stringify(value)).length;
+}
+
 /** Return whether a value is finite strict JSON with plain objects and no cycles. */
 export function isJsonValue(value: unknown): value is JsonValue {
 	return check(value, new Set<object>(), 0);
