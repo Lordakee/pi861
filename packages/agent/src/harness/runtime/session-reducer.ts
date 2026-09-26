@@ -1,9 +1,5 @@
 import type { CurrentOperationInfo, HarnessEvent, LaneInfo, SessionSnapshot } from "../agent-harness.ts";
 
-function compareNames(a: string, b: string): number {
-	return a < b ? -1 : a > b ? 1 : 0;
-}
-
 function cloneSnapshot(snapshot: SessionSnapshot): SessionSnapshot {
 	return {
 		faulted: snapshot.faulted,
@@ -40,7 +36,7 @@ export function reduceSessionSnapshot(snapshot: SessionSnapshot, event: HarnessE
 		case "lane_created":
 			if (laneByName(next.lanes, event.lane) === undefined) {
 				next.lanes.push({ name: event.lane, tipId: event.at, operation: null });
-				next.lanes.sort((a, b) => compareNames(a.name, b.name));
+				next.lanes.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 			}
 			return next;
 		case "run_start":
