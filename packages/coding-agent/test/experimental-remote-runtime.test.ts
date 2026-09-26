@@ -193,43 +193,47 @@ describe("experimental durable server composition", () => {
 		await expect.poll(() => pathExists(join(directory, `control-${serverId}.sock`)), { timeout: 5_000 }).toBe(false);
 	});
 
-	test("passes client plugin packages to a cold server and restores them for its next generation", { timeout: 60_000 }, async () => {
-		const directory = await mkdtemp(join("/tmp", "pi-auto-plugin-"));
-		directories.add(directory);
-		const serverId = "00000000-0000-4000-8000-000000000001";
-		const packagePath = fileURLToPath(new URL("../examples/plugins/pi-example-plugin", import.meta.url));
-		vi.stubEnv("PI_SERVER_DIR", directory);
-		vi.stubEnv("PI_SERVER_ID", serverId);
+	test(
+		"passes client plugin packages to a cold server and restores them for its next generation",
+		{ timeout: 60_000 },
+		async () => {
+			const directory = await mkdtemp(join("/tmp", "pi-auto-plugin-"));
+			directories.add(directory);
+			const serverId = "00000000-0000-4000-8000-000000000001";
+			const packagePath = fileURLToPath(new URL("../examples/plugins/pi-example-plugin", import.meta.url));
+			vi.stubEnv("PI_SERVER_DIR", directory);
+			vi.stubEnv("PI_SERVER_ID", serverId);
 
-		const first = await openClientRuntime({ command: "client", ...sessionWorkerModel });
-		try {
-			const activated = await activateBuiltinClientServices(first.servers[0]!);
-			const presentationPlugins = await activated.plugins.prepareSession(
-				{ sessionId: "demo-1", packagePaths: [packagePath] },
-				BACKGROUND_CONTEXT,
-			);
-			await activated.management.attach("demo-1", BACKGROUND_CONTEXT);
-			const loaded = await createPresentationFacetLoaders(presentationPlugins)[0]!.load();
-			expect(loaded.facets.map(({ id }) => id)).toEqual(["@earendil-works/pi-example-plugin/tui"]);
-			await loaded.dispose();
-		} finally {
-			await first.dispose();
-		}
-		await expect.poll(() => pathExists(join(directory, `${serverId}.sock`)), { timeout: 5_000 }).toBe(false);
+			const first = await openClientRuntime({ command: "client", ...sessionWorkerModel });
+			try {
+				const activated = await activateBuiltinClientServices(first.servers[0]!);
+				const presentationPlugins = await activated.plugins.prepareSession(
+					{ sessionId: "demo-1", packagePaths: [packagePath] },
+					BACKGROUND_CONTEXT,
+				);
+				await activated.management.attach("demo-1", BACKGROUND_CONTEXT);
+				const loaded = await createPresentationFacetLoaders(presentationPlugins)[0]!.load();
+				expect(loaded.facets.map(({ id }) => id)).toEqual(["@earendil-works/pi-example-plugin/tui"]);
+				await loaded.dispose();
+			} finally {
+				await first.dispose();
+			}
+			await expect.poll(() => pathExists(join(directory, `${serverId}.sock`)), { timeout: 5_000 }).toBe(false);
 
-		const second = await openClientRuntime({ command: "client", ...sessionWorkerModel });
-		try {
-			const activated = await activateBuiltinClientServices(second.servers[0]!);
-			const presentationPlugins = await activated.plugins.prepareSession(
-				{ sessionId: "demo-1", packagePaths: null },
-				BACKGROUND_CONTEXT,
-			);
-			await activated.management.attach("demo-1", BACKGROUND_CONTEXT);
-			expect(createPresentationFacetLoaders(presentationPlugins)).toHaveLength(1);
-		} finally {
-			await second.dispose();
-		}
-	});
+			const second = await openClientRuntime({ command: "client", ...sessionWorkerModel });
+			try {
+				const activated = await activateBuiltinClientServices(second.servers[0]!);
+				const presentationPlugins = await activated.plugins.prepareSession(
+					{ sessionId: "demo-1", packagePaths: null },
+					BACKGROUND_CONTEXT,
+				);
+				await activated.management.attach("demo-1", BACKGROUND_CONTEXT);
+				expect(createPresentationFacetLoaders(presentationPlugins)).toHaveLength(1);
+			} finally {
+				await second.dispose();
+			}
+		},
+	);
 
 	test("retires a cold server after its only Session attachment disconnects", { timeout: 60_000 }, async () => {
 		const directory = await mkdtemp(join("/tmp", "pi-auto-session-"));
