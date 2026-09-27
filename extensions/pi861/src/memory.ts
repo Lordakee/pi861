@@ -29,7 +29,8 @@ export interface MemoryWrite {
 }
 export interface MemoryReceipt {
 	requestId: string;
-	state: "committed";
+	/** "pending" is returned only by a buffering wrapper: the record is explicitly NOT committed to the shared authority yet. */
+	state: "committed" | "pending";
 	id: string;
 	scope: string;
 	revision: number;
@@ -39,6 +40,8 @@ export interface MemoryBackend {
 	search(query: string, limit?: number): Promise<MemoryItem[]>;
 	put(input: MemoryWrite): Promise<MemoryReceipt>;
 	withdraw(requestId: string, scope: string, id: string, expectedRevision: number): Promise<MemoryReceipt>;
+	/** Key-ordered pagination including this scope; omitted by minimal adapters. */
+	list?(scope: string, afterId?: string, limit?: number): Promise<{ items: MemoryItem[]; nextId?: string }>;
 }
 export function canonical(value: unknown): string {
 	if (value === null) return "null";
@@ -193,6 +196,14 @@ export class LocalMemory implements MemoryBackend {
 		item.updatedAt = Date.now();
 		return this.commit(next, hash, { requestId, state: "committed", id, scope, revision: item.revision });
 	}
+	async list(scope: string, afterId = "", limit = 50): Promise<{ items: MemoryItem[]; nextId?: string }> {
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid page limit");
+		if (!this.principal.readScopes.includes(scope)) return { items: [] };
+		const available = this.state.items.filter((item) => item.scope === scope && item.status !== "withdrawn" && item.id > afterId)
+			.sort((a, b) => a.id < b.id ? -1 : 1);
+		const items = available.slice(0, limit).map((item) => structuredClone(item));
+		return { items, ...(available.length > limit ? { nextId: items.at(-1)?.id } : {}) };
+	}
 }
 
 /** Byte-budgeted, not tokenizer-exact. Whole entries only; candidates remain explicitly labelled. */
@@ -218,4 +229,91 @@ export function contextPack(
 		usedBytes += size;
 	}
 	return { text: lines.join("\n"), usedBytes, omitted };
+}
+
+/** Overlaps the host-side capture filter in index.ts; kept local so the memory core stays dependency-free. */
+export function sensitivePattern(value: string): boolean {
+	return /-----BEGIN [A-Z ]*PRIVATE KEY-----|(?:sk-|ghp_|github_pat_)[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._-]{12,}|(?:password|api[_-]?key|secret)\s*[:=]\s*["']?[^\s"']{8,}/i.test(value);
+}
+
+/** Necessary state for a tool result whose raw content stays outside the searchable corpus. */
+export interface ControlledReference {
+	resultRef: string;
+	reason: "oversize" | "sensitive";
+	bytes: number;
+	contentDigest: string;
+	tool: string;
+	toolCallId: string;
+	storedAt: number;
+}
+
+/**
+ * Tool-result capture that never discards oversized or sensitive output: the memory item
+ * stores only the controlled reference (digest, size, reason, pointer). Raw content stays
+ * where the host already recorded it, or is copied through the injected saveRaw store
+ * (for example the SkillRepository resultRef mechanism). Secrets never enter abstract,
+ * overview, full text or any later index built from them.
+ */
+export async function controlledToolCapture(input: {
+	toolName: string;
+	toolCallId: string;
+	content: string;
+	id: string;
+	scope: string;
+	maxBytes?: number;
+	saveRaw?: (content: string) => Promise<string>;
+}): Promise<{ item: MemoryInput; reference?: ControlledReference; stored: "inline" | "controlled" }> {
+	if (!input.toolName || !input.toolCallId || !input.id || !input.scope || typeof input.content !== "string") {
+		throw new Error("Invalid tool capture input");
+	}
+	const bytes = Buffer.byteLength(input.content, "utf8");
+	const oversize = bytes > (input.maxBytes ?? 65_536);
+	const sensitive = !oversize && sensitivePattern(input.content);
+	if (!oversize && !sensitive) {
+		return {
+			item: {
+				id: input.id, scope: input.scope, kind: "evidence", status: "candidate",
+				full: input.content,
+				abstract: `Tool result: ${input.toolName}`,
+				overview: input.content.length > 1000 ? `${input.content.slice(0, 1000)} [excerpt; read full record]` : input.content,
+				source: { kind: "tool", ref: `tool:${input.toolCallId}` },
+			},
+			stored: "inline",
+		};
+	}
+	const resultRef = input.saveRaw ? await input.saveRaw(input.content) : `pi-session-tool:${input.toolCallId}`;
+	const reference: ControlledReference = {
+		resultRef, reason: oversize ? "oversize" : "sensitive", bytes,
+		contentDigest: digest(input.content), tool: input.toolName, toolCallId: input.toolCallId, storedAt: Date.now(),
+	};
+	const note = `Controlled reference: raw ${reference.reason} tool result (${bytes} bytes, digest ${reference.contentDigest}). ` +
+		`Read it back through the controlled resultRef ${resultRef}; it is not part of searchable memory.`;
+	return {
+		item: {
+			id: input.id, scope: input.scope, kind: "evidence", status: "candidate",
+			full: JSON.stringify(reference),
+			abstract: `Tool result ${input.toolName}: ${reference.reason} controlled reference (${bytes} bytes)`,
+			overview: note,
+			source: { kind: "tool", ref: resultRef },
+		},
+		reference, stored: "controlled",
+	};
+}
+
+export interface MemoryAutomationSettings { autoRecall?: boolean; autoCapture?: boolean; autoEnrich?: boolean; }
+export interface MemorySettingsChain { tenant?: MemoryAutomationSettings; project?: MemoryAutomationSettings; role?: MemoryAutomationSettings; }
+
+/** Project/role (岗位) settings override tenant defaults key by key; unset keys inherit, all-off is the safe floor. */
+export function resolveMemorySettings(chain: MemorySettingsChain): Required<MemoryAutomationSettings> {
+	const levels = [chain.tenant, chain.project, chain.role];
+	const pick = (key: keyof MemoryAutomationSettings): boolean => {
+		for (let index = levels.length - 1; index >= 0; index--) {
+			const value = levels[index]?.[key];
+			if (value === undefined) continue;
+			if (typeof value !== "boolean") throw new Error(`Memory setting ${key} must be boolean`);
+			return value;
+		}
+		return true;
+	};
+	return { autoRecall: pick("autoRecall"), autoCapture: pick("autoCapture"), autoEnrich: pick("autoEnrich") };
 }

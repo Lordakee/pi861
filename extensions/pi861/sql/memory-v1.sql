@@ -78,4 +78,6 @@ DO $$ BEGIN
 END $$;
 COMMIT;
 -- Grant only SELECT/INSERT/UPDATE on required tables to a non-superuser, non-BYPASSRLS role.
+-- Additionally grant DELETE on pi861_memory_outbox to the trusted consumer role that drains
+-- it with SELECT ... FOR UPDATE SKIP LOCKED (OutboxConsumer); index handlers must be idempotent.
 -- No default '*', no memory-supplied SQL, and no automatic database creation.
