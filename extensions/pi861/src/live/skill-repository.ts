@@ -172,6 +172,31 @@ function rebuild(state: SkillState): SkillCatalog {
 	return catalog;
 }
 
+/**
+ * RFC 6901 field selection (R5.8): string form only (no URI fragments, wildcards or query syntax),
+ * own properties only, and only valid array indices. Legal null/false/0/"" values resolve normally.
+ */
+function resolvePointer(value: unknown, pointer: string): unknown {
+	if (pointer.startsWith("#")) throw new Error("JSON Pointer must use the string form, not a URI fragment");
+	if (!pointer.startsWith("/")) throw new Error("Invalid JSON Pointer");
+	let current: unknown = value;
+	for (const token of pointer.slice(1).split("/")) {
+		if (/~(?!0|1)/.test(token)) throw new Error("Invalid JSON Pointer escape");
+		if (/[*?]/.test(token)) throw new Error("JSON Pointer does not support wildcards or query expressions");
+		const key = token.replace(/~1/g, "/").replace(/~0/g, "~");
+		if (Array.isArray(current)) {
+			if (!/^(0|[1-9][0-9]*)$/.test(key)) throw new Error("Invalid JSON Pointer array index");
+			if (Number(key) >= current.length) throw new Error("JSON Pointer array index out of bounds");
+			current = current[Number(key)];
+		} else if (typeof current === "object" && current !== null) {
+			// Own properties only: inherited names (constructor, __proto__) are not addressable.
+			if (!Object.hasOwn(current, key)) throw new Error("JSON Pointer path not found");
+			current = (current as Record<string, unknown>)[key];
+		} else throw new Error("JSON Pointer crosses a scalar value");
+	}
+	return current;
+}
+
 /** Source bytes are immutable; generated instructions are candidates until trusted validation publishes them. */
 export class SkillRepository {
 	private readonly store: StateStore<SkillState>;
@@ -518,19 +543,21 @@ export class SkillRepository {
 		});
 		return id;
 	}
-	async readResult(id: string, reader: ResultReader, offset = 0): Promise<unknown> {
+	async readResult(id: string, reader: ResultReader, offset = 0, pointer = ""): Promise<unknown> {
 		const result = (await this.store.read()).results?.[id];
 		// The reference id is not a bearer token: every read re-checks the reader's current
-		// authorization, so a revoked role, Skill or grant denies immediately (R5.8/R6.7).
+		// authorization before pointer evaluation, so a pointer can never widen it (R5.8/R6.7).
 		if (!result || !this.authorizeResult(result, reader)) throw new Error("Artifact not found");
-		if (!Number.isSafeInteger(offset) || offset < 0 || offset > result.text.length)
+		// A pointer selects a field; pagination then applies to the selected value's serialization.
+		const text = pointer ? JSON.stringify(resolvePointer(JSON.parse(result.text), pointer)) : result.text;
+		if (!Number.isSafeInteger(offset) || offset < 0 || offset > text.length)
 			throw new Error("Invalid artifact offset");
 		return {
-			text: result.text.slice(offset, offset + 16_000),
+			text: text.slice(offset, offset + 16_000),
 			offset,
-			nextOffset: Math.min(result.text.length, offset + 16_000),
-			totalCharacters: result.text.length,
-			complete: offset + 16_000 >= result.text.length,
+			nextOffset: Math.min(text.length, offset + 16_000),
+			totalCharacters: text.length,
+			complete: offset + 16_000 >= text.length,
 		};
 	}
 	private authorizeResult(result: { text: string } & ResultOwner, reader: ResultReader): boolean {
