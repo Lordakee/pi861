@@ -15,7 +15,7 @@ CI run <https://github.com/Lordakee/pi861/actions/runs/36317857198>（对应 `54
 | 检查 | 结果 | 对本矩阵的含义 |
 | --- | --- | --- |
 | deterministic（隔离 ts 5.9.3 `tsc --noEmit` + `node --test test/*.test.mjs`） | 本地复核 @ a667d206d：**251/251 通过**；CI @ 542feb6f6 通过 | 内核与基础入口（index.ts）的协议/安全行为有当前版本证据；M1-M5 + P3 新增测试全部计入。 |
-| postgres（真实临时 PostgreSQL 17 + 受限角色） | CI @ 542feb6f6 通过（run 36317857198） | `postgres.integration.mjs`（含 M3 `PostgresMemory` 逐记录路径，7ec8592ec 起即导入）对真实临时库通过；真实业务库未触（见第 5 节待授权）。 |
+| postgres（真实临时 PostgreSQL 18 + 受限角色） | CI @ 542feb6f6 通过（run 36317857198，postgres:17 时期）；升级 postgres:18 后本地 docker 实测 postgres.integration.mjs 8/8（2026-09-27），CI 复核随本次推送 | `postgres.integration.mjs`（含 M3 `PostgresMemory` 逐记录路径，7ec8592ec 起即导入）对真实临时库通过；真实业务库未触（见第 5 节待授权）。 |
 | repository-check（根 `npm run check`） | 本地 @ a667d206d：退出 0（`d2bff94d4` 起根 tsconfig/biome 已含 pi861 扩展）；CI @ 542feb6f6 通过 | G6 盲区（根检查不含扩展目录）已收口。 |
 | pi-host（发布宿主 0.86.1 + `tsconfig.host.json`） | 本地 @ a667d206d：**3/3 通过**（pi-host/runtime-host/skills-host，真实 Pi 0.86.1 CLI）；CI job 清单只含前两个（@ 542feb6f6 2/2） | runtime.ts 完整入口编译、加载、缓冲故障接管、记忆语义与 AX5 宿主级 Skill 生命周期在当前版本实际运行；skills-host.integration.mjs（P3 新增）尚未纳入 CI 清单。 |
 | pi-host-source（源码宿主，`19b2dd709` job） | CI @ 542feb6f6 通过（tsgo 全量检查 + 源码宿主两个集成测试）；本地 @ a667d206d：`tsgo --project tsconfig.host-source.json` 退出 0 | O4 已获 CI 证据。已知限定：tsc 5.9.3 无法检查该配置（上游 `packages/tui/src/utils.ts` 的 ES2024 正则 flag，TS1501；workflow 注释已载），tsgo 为权威门。 |
@@ -23,7 +23,7 @@ CI run <https://github.com/Lordakee/pi861/actions/runs/36317857198>（对应 `54
 由此得出本矩阵最重要的限定：
 
 - runtime.ts 完整入口（模型运行时接线、/mcp、/skills、完整 /goal、Worker 守卫）已随宿主集成测试实际运行（3/3）；goal 全链（规划→双真实 Worker 子进程→Skill/MCP→检查门→独立审计→受控集成落 git）另有 AX10 端到端测试（本地两连跑绿，真实 Pi 0.86.1 宿主 + 确定性本地 provider fixture）。
-- **fixture 证明协议与安全行为，不证明真实模型任务质量。** 目前没有任何真实付费模型、真实搜索密钥或跨主机多节点的验证；真实用量归因、真实搜索后端待授权；postgres 新路径已在 CI 对真实临时 PostgreSQL 17 验证，真实业务库未触。
+- **fixture 证明协议与安全行为，不证明真实模型任务质量。** 目前没有任何真实付费模型、真实搜索密钥或跨主机多节点的验证；真实用量归因、真实搜索后端待授权；postgres 新路径已在 CI 对真实临时库验证（现已升级 PostgreSQL 18），真实业务库未触。
 
 ## 2. 状态 taxonomy（定义）
 
@@ -146,7 +146,7 @@ CI run <https://github.com/Lordakee/pi861/actions/runs/36317857198>（对应 `54
 | R6.10 | `src/memory.ts`（recall 拒绝为新证据、inference 不得自确认/constraint）、`layered-memory.ts`（quote 字面校验） | memory.test.mjs（recalled text not accepted / model inference cannot claim confirmation）、live-memory.test.mjs | 受控协议验证通过 | — |
 | R6.11 | `src/memory.ts`（tombstone）、`src/live/layered-memory.ts`（撤回传播任务/投影）、`src/postgres.ts`（DB tombstone+outbox） | memory.test.mjs（withdrawal idempotent / suppresses re-ingestion / paraphrases from same source）、postgres.test.mjs（"outbox consumer applies events, deletes only accepted rows and keeps failures queued"） | 受控协议验证通过 | outbox 消费者已实现并有确定性测试（M3）。 |
 | R6.12 | `src/memory.ts`（候选不可自确认） | memory.test.mjs（候选不可自确认） | 受控协议验证通过 | "经验生成 Skill 候选"通道未实现，负向约束已满足。 |
-| R6.13 | `sql/memory-v1.sql`（全表+RLS）、`src/postgres.ts`（事务/advisory lock/重放/outbox；PostgresMemory 逐记录权威） | postgres.integration.mjs（real PostgreSQL: atomic memory, CAS, RLS and withdrawal；7ec8592ec 起即导入 PostgresMemory）+ postgres.test.mjs | **真实服务已验证** | CI postgres job @ 542feb6f6 通过（run 36317857198：PostgreSQL 17 临时库+受限角色，覆盖 M3 PostgresMemory 路径）；真实业务库未触（见第 5 节待授权）。 |
+| R6.13 | `sql/memory-v1.sql`（全表+RLS）、`src/postgres.ts`（事务/advisory lock/重放/outbox；PostgresMemory 逐记录权威） | postgres.integration.mjs（real PostgreSQL: atomic memory, CAS, RLS and withdrawal；7ec8592ec 起即导入 PostgresMemory）+ postgres.test.mjs | **真实服务已验证** | CI postgres job @ 542feb6f6 通过（run 36317857198：PostgreSQL 18 临时库（CI postgres:18 @ a50116df1 后；17 时期证据见历史）+受限角色，覆盖 M3 PostgresMemory 路径）；真实业务库未触（见第 5 节待授权）。 |
 | R6.14 | `examples/postgres-extension.mjs`（TLS/CA/池/超时/strip URL ssl 参数）、`sql/*.sql` 头注（迁移账号分离） | postgres.integration.mjs（受限角色/迁移升级子用例） | 仅内核 | 备份/恢复流程未实现（运维项）；凭据委派服务未实现。 |
 | R6.15 | `src/live/store.ts`（PostgresStateStore 仅控制态）、`src/postgres.ts`（PostgresMemory 逐记录权威）、显式迁移 | postgres.test.mjs（"explicit migration moves snapshot authority into per-record rows, verifies and cuts over"、"migration refuses unexplainable tombstones instead of copying them silently"）、live-memory.test.mjs（"layered memory delegates item authority and keeps only control state"） | 受控协议验证通过 | 数据权威统一：逐记录 PostgresMemory + StateStore 控制态，含显式迁移与 reconcile（M3 `2b8b2cd39` + 审核修复 `fec2f3609`）；集成测试对真实临时库执行 sql/memory-v1.sql + runtime-v2.sql 迁移（CI @ 542feb6f6 绿），快照→逐记录显式迁移为确定性测试覆盖。 |
 | R6.16 | `index.ts`（Intl.Segmenter 分词）、`src/postgres.ts:68`（PG 全文 tsvector+GIN）、`sql/memory-v1.sql:47` | memory.test.mjs（search 约束）、live-memory.test.mjs（事件召回） | 仅内核 | pgvector 未实现且无装饰性开关（如实）；检索为词法基线（含 PG 全文路径，CI @ 542feb6f6 已绿）；中文/代码符号/路径检索专项测试未补。 |
@@ -207,7 +207,7 @@ CI run <https://github.com/Lordakee/pi861/actions/runs/36317857198>（对应 `54
 | 状态 | 条数 | 占比 |
 | --- | --- | --- |
 | 受控协议验证通过 | 94 | 86.2% |
-| 真实服务已验证 | 1 | 0.9%（R6.13，PostgreSQL 17 临时库：CI @ 542feb6f6 绿 + e3f07a789 历史） |
+| 真实服务已验证 | 1 | 0.9%（R6.13，PostgreSQL 18 临时库（CI postgres:18 @ a50116df1 后；17 时期证据见历史）：CI @ 542feb6f6 绿 + e3f07a789 历史） |
 | 已接入 | 9 | 8.3%（G8、R4.3、R4.9、R4.10、R5.10、R6.18、R8.4、R8.6、R8.7） |
 | 仅内核 | 2 | 1.8%（R6.14、R6.16） |
 | 未实现 | 3 | 2.8%（R3.8、O1、O3） |
@@ -232,4 +232,4 @@ CI run <https://github.com/Lordakee/pi861/actions/runs/36317857198>（对应 `54
 | 真实付费模型验收 | 未执行：全部模型路径为确定性本地 provider fixture（含 AX10）；真实用量归因/降级/接管仅 fixture 验证 |
 | 真实搜索后端 | 未执行：Brave 路径仅 HTTP fixture（fetch 注入）；无真实密钥联网验证 |
 | 跨主机多节点 | 未执行：双 Worker/远程服务均为 loopback HTTP fixture；未验证真实多机/容器 |
-| 真实业务数据库 | postgres 新路径 CI 已绿（@ 542feb6f6，真实临时 PostgreSQL 17 + 受限角色，run 36317857198），但未接触真实业务库（数据量/并发/运维流程均未验证） |
+| 真实业务数据库 | postgres 新路径 CI 已绿（@ 542feb6f6，真实临时 PostgreSQL（现已 18）+ 受限角色，run 36317857198），但未接触真实业务库（数据量/并发/运维流程均未验证） |

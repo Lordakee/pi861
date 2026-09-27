@@ -69,7 +69,7 @@ SQL 集成（可选，同 CI postgres job）：`PI861_ALLOW_TEST_DATABASE=1` + `
 | 真实付费模型验收 | 未执行；全部模型路径为确定性本地 provider fixture（含 AX10），真实用量归因/接管仅 fixture 验证 |
 | 真实搜索后端 | 未执行；Brave 仅 HTTP fixture，无真实密钥联网验证 |
 | 跨主机多节点 | 未执行；双 Worker/远程服务为 loopback HTTP fixture |
-| 真实业务数据库 | postgres 新路径 CI 已绿（真实临时 PostgreSQL 17 + 受限角色，run 36317857198），真实业务库未触 |
+| 真实业务数据库 | postgres 新路径 CI 已绿（真实临时 PostgreSQL 18 + 受限角色，run 36317857198），真实业务库未触 |
 
 ## 6. 未实现 / 已知缺陷清单
 
