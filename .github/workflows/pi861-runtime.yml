@@ -102,3 +102,45 @@ jobs:
         env:
           PI861_TEST_PI_CLI: ${{ runner.temp }}/pi861-host/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js
         run: node --experimental-strip-types --test test/pi-host.integration.mjs test/runtime-host.integration.mjs
+
+  # Source-host variant of pi-host: verifies the extension against the Pi *source tree in this
+  # checkout* instead of the published 0.86.1 bundle, so host-side changes on this branch are
+  # covered. Skipped steps count as failure (no skip guards), same as the sibling jobs.
+  pi-host-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+      # Full repository install (repository-check pattern): tsconfig.host-source.json resolves
+      # every @earendil-works package to packages/*/src via the root tsconfig paths, and the
+      # integration tests launch the source CLI through tsx from the root node_modules.
+      - run: npm ci --ignore-scripts
+      # Generates packages/ai/src/providers/data/*.json (not committed). The source host imports
+      # these at runtime; without this step the tsx-launched CLI fails ERR_MODULE_NOT_FOUND.
+      - name: Generate provider catalog data required by source-host runs
+        run: npm --prefix packages/ai run generate-models
+      # The deterministic job checks the extension in isolation with tsc 5.9.3, but that compiler
+      # cannot check the monorepo source tree this config includes (TS1501: the `v` regex flag in
+      # packages/tui needs a newer target than the repo's ES2022). The repository's own gate
+      # typechecks with tsgo (npm run check -> tsgo --noEmit, provided by npm ci above), which is
+      # therefore the isolated-compiler equivalent used here.
+      - name: Type check extension against the current source tree
+        working-directory: extensions/pi861
+        run: ../../node_modules/.bin/tsgo --project tsconfig.host-source.json
+      # pi-test.sh launches the source host as
+      #   node_modules/.bin/tsx --tsconfig tsconfig.json packages/coding-agent/src/experimental/cli.ts
+      # The tests spawn process.execPath directly, so the same launch is expressed as node plus
+      # PI861_TEST_PI_LAUNCH_PREFIX (the tsx CLI entry and root tsconfig), which both test files
+      # insert before the CLI path. Timeouts are raised because the first RPC of each test also
+      # pays the tsx compile of the source tree; assertions themselves are unchanged.
+      - name: Real Pi RPC and native runtime against the current source tree
+        working-directory: extensions/pi861
+        env:
+          PI861_TEST_PI_CLI: ${{ github.workspace }}/packages/coding-agent/src/experimental/cli.ts
+          PI861_TEST_PI_LAUNCH_PREFIX: '["${{ github.workspace }}/node_modules/tsx/dist/cli.mjs","--tsconfig","${{ github.workspace }}/tsconfig.json"]'
+          PI861_TEST_TIMEOUT_MS: '300000'
+          PI861_TEST_PI_RPC_TIMEOUT_MS: '120000'
+        run: node --experimental-strip-types --test test/pi-host.integration.mjs test/runtime-host.integration.mjs
