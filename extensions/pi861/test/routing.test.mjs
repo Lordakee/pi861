@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { test } from "node:test";
 import { eligible, selectInitial, ModelRecovery, ModelFailure, inferWithRecovery, HealthService, IncrementBuffer } from "../src/routing.ts";
+import { McpClient } from "../src/live/mcp.ts";
 
 const models = [
 	{ id: "cheap", revision: "1", provider: "p1", model: "a", quality: 1, costRank: 1, contextWindow: 100, capabilities: ["tools"], enabled: true,
@@ -281,4 +284,53 @@ test("incomplete or invalid tool arguments are never dispatched", () => {
 	assert.match(decision.error, /JSON object/);
 	buffer.toolArgs(attempt, "unknown", "{}");
 	assert.equal(buffer.endToolArgs(attempt, "ghost").dispatchable, false);
+});
+test("AX4/p1-text-mid-stream: a cut text stream never becomes a tool call and the lost generation cannot pollute the retry", () => {
+	const buffer = new IncrementBuffer();
+	const attempt = { generation: 1, configId: "strong", configRevision: "1" };
+	assert.equal(buffer.textDelta(attempt, "partial answ"), true); // stream ends in the middle of text
+	const retry = { generation: 2, configId: "backup", configRevision: "1" };
+	assert.equal(buffer.textDelta(retry, "fresh"), true); // the new attempt takes ownership
+	assert.equal(buffer.textDelta(attempt, "er"), false); // late increment from the lost generation is refused
+	assert.equal(buffer.toolArgs(attempt, "call-1", '{"project":"p"}'), false); // stale args cannot smuggle a tool call
+	assert.equal(buffer.endToolArgs(attempt, "call-1").dispatchable, false); // interrupted text alone dispatches nothing
+	assert.deepEqual(buffer.view(), { attempt: retry, text: "fresh" }); // old text never leaks into the retry
+	assert.equal(buffer.endToolArgs(retry, "never-started").dispatchable, false); // text without tool args is never a call
+});
+test("AX4/p2-args-mid-stream: half-received arguments end undispatchable and the MCP server receives zero calls", async () => {
+	const calls = [];
+	const server = createServer((req, res) => {
+		let body = ""; req.on("data", (chunk) => { body += chunk; }); req.on("end", () => {
+			const input = JSON.parse(body);
+			if (input.method === "initialize") {
+				res.setHeader("Mcp-Session-Id", "s1"); res.setHeader("Content-Type", "application/json");
+				res.end(JSON.stringify({ jsonrpc: "2.0", id: input.id, result: { protocolVersion: "2025-11-25", capabilities: { tools: {} } } })); return;
+			}
+			if (input.method === "tools/list") {
+				res.setHeader("Content-Type", "application/json");
+				res.end(JSON.stringify({ jsonrpc: "2.0", id: input.id, result: { tools: [{ name: "lookup", inputSchema: { type: "object", properties: { project: { type: "string" } }, required: ["project"], additionalProperties: false } }] } })); return;
+			}
+			if (input.method === "tools/call") calls.push({ name: input.params.name, args: input.params.arguments }); // the side-effect boundary
+			res.setHeader("Content-Type", "application/json");
+			res.end(JSON.stringify({ jsonrpc: "2.0", id: input.id, result: { content: [{ type: "text", text: "ok" }] } }));
+		});
+	});
+	server.listen(0, "127.0.0.1"); await once(server, "listening");
+	const client = new McpClient({ id: "ax4p2", accountId: "t", transport: { kind: "http", url: `http://127.0.0.1:${server.address().port}/mcp`, allowLoopbackHttp: true } });
+	try {
+		const [tool] = await client.tools(new AbortController().signal);
+		const buffer = new IncrementBuffer();
+		const attempt = { generation: 1, configId: "strong", configRevision: "1" };
+		buffer.toolArgs(attempt, "call-1", '{"proj'); // stream ends mid-argument
+		const decision = buffer.endToolArgs(attempt, "call-1");
+		assert.equal(decision.dispatchable, false);
+		assert.match(decision.error, /not valid JSON/);
+		assert.equal(calls.length, 0); // the gate refused dispatch: the server was never touched
+		const retry = { generation: 2, configId: "backup", configRevision: "1" };
+		buffer.toolArgs(retry, "call-2", '{"project":"p"}');
+		const complete = buffer.endToolArgs(retry, "call-2");
+		assert.equal(complete.dispatchable, true);
+		await client.call("lookup", complete.args, tool.schemaHash, new AbortController().signal);
+		assert.equal(calls.length, 1); // the same server sees exactly the one gated retry
+	} finally { client.close(); server.close(); }
 });

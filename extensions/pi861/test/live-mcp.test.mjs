@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { enforceDeploymentMode, McpClient } from "../src/live/mcp.ts";
+import { OperationJournal } from "../src/live/operations.ts";
+import { FileStateStore } from "../src/live/store.ts";
 const signal = () => new AbortController().signal;
 const schema = { type: "object", properties: { project: { type: "string" } }, required: ["project"], additionalProperties: false };
 async function waitFor(check, timeoutMs = 5000) {
@@ -92,6 +94,29 @@ test("bounded reconnect policy retries connection establishment only", async t =
   const patient = new McpClient({ id: "flaky2", accountId: "t", transport: { kind: "http", url, allowLoopbackHttp: true }, reconnect: { maxAttempts: 3, baseDelayMs: 10 } });
   t.after(() => patient.close());
   assert.equal((await patient.tools(signal())).length, 1);
+});
+test("AX4/p5-receipt-lost: a committed side effect with a dropped receipt reconciles through a trusted query and never re-executes", async t => {
+  const directory = mkdtempSync(join(tmpdir(), "pi861-ax4p5-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const ledger = join(directory, "ledger.jsonl");
+  const client = new McpClient({ id: "receipt", accountId: "t", timeoutMs: 2000, transport: { kind: "stdio", process: {
+    command: process.execPath, args: [fileURLToPath(new URL("./fixtures/mcp-receipt-loss.mjs", import.meta.url))], cwd: process.cwd(), env: { PI861_MCP_LEDGER: ledger } } } });
+  t.after(() => client.close());
+  const tools = await client.tools(signal());
+  const commit = tools.find(tool => tool.name === "commit"), status = tools.find(tool => tool.name === "status");
+  const journal = new OperationJournal(new FileStateStore(join(directory, "state.json"), { receipts: {} }));
+  const intent = { requestId: "r1", principal: "role", resource: "mcp/receipt/commit", fingerprint: "f", readOnly: false };
+  // The server commits its side effect, then drops the response: the operation succeeded but the receipt was lost.
+  await assert.rejects(journal.run(intent, () => client.call("commit", { project: "p" }, commit.schemaHash, signal())), /transport failed/);
+  assert.equal((await journal.list("role")).find(r => r.requestId === "r1").state, "unknown");
+  await assert.rejects(journal.run({ ...intent, requestId: "r2" }, () => client.call("commit", { project: "p" }, commit.schemaHash, signal())), /unresolved/); // equivalent replay refused while unknown
+  // Trusted reconciliation: query the server's own committed state and recover the original result.
+  const committed = JSON.parse((await client.call("status", {}, status.schemaHash, signal())).content[0].text);
+  assert.equal(committed.length, 1);
+  assert.equal(committed[0].result, "committed p #1");
+  await journal.resolve("role", "r1", `Queried server status: ${committed.length} committed record(s); original result "${committed[0].result}"`);
+  await assert.rejects(journal.run(intent, () => { throw new Error("a reconciled receipt must never re-execute"); }), /resolved/);
+  assert.equal(JSON.parse((await client.call("status", {}, status.schemaHash, signal())).content[0].text).length, 1); // replay executed nothing
 });
 test("deployment modes: trusted-local vs production-isolated boundaries (R5.11)", () => {
   const stdio = { id: "s", accountId: "a", transport: { kind: "stdio", process: { command: process.execPath, args: [], cwd: process.cwd() } } };
