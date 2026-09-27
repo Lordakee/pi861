@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { digest } from "../memory.ts";
 import { normalizeScope } from "../scheduler.ts";
@@ -27,7 +27,10 @@ export class Workspaces {
 	constructor(repository: string, root: string) {
 		this.repository = resolve(repository);
 		this.root = resolve(root);
-		if (this.root === this.repository || this.root.startsWith(`${this.repository}/`))
+		// Path-relative containment stays correct on Windows, where resolve() joins with "\\" and a
+		// `${repository}/` prefix match would let worktrees live inside the source tree.
+		const offset = relative(this.repository, this.root);
+		if (offset === "" || (!isAbsolute(offset) && offset !== ".." && !offset.startsWith(`..${sep}`)))
 			throw new Error("Worktrees must be outside the source working tree");
 		mkdirSync(this.root, { recursive: true, mode: 0o700 });
 	}

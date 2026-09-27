@@ -4,9 +4,13 @@ import { mkdtemp,mkdir,symlink,rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { guardWorkerTool, workerIsolationBoundary } from "../src/live/worker-guard.ts";
-test("native worker paths are constrained before dispatch",async()=>{
+test("native worker paths are constrained before dispatch",async t=>{
  const dir=await mkdtemp(join(tmpdir(),"pi861-guard-"));try{
- const root=join(dir,"work"),outside=join(dir,"outside");await mkdir(root);await mkdir(outside);await mkdir(join(root,"module"));await symlink(outside,join(root,"link"));
+ const root=join(dir,"work"),outside=join(dir,"outside");await mkdir(root);await mkdir(outside);await mkdir(join(root,"module"));
+ // Directory symlink first; junction fallback covers Windows without symlink privilege (the guard
+ // resolves real paths, which junctions satisfy identically). Both unavailable -> explicit skip.
+ try{await symlink(outside,join(root,"link"));}
+ catch{try{await symlink(outside,join(root,"link"),"junction");}catch{return t.skip("no directory link support on this platform");}}
  const guard={root,writeScopes:["module"],allowShell:false};
  guardWorkerTool(guard,"write",{path:"module/new.ts"});assert.throws(()=>guardWorkerTool(guard,"write",{path:"other.ts"}),/reservation/);
  assert.throws(()=>guardWorkerTool(guard,"read",{path:"../outside"}),/escapes/);assert.throws(()=>guardWorkerTool(guard,"read",{path:"link/key"}),/outside/);

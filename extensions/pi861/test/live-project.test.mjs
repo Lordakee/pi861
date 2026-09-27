@@ -44,6 +44,16 @@ test("task ownership, role/model matching and versioned append are enforced",asy
  await coordinator.verify(claim.task.lease,{accepted:true,evidence:["verified"]},"v");assert.equal((await coordinator.state()).status,"review");
  }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
+test("worktree root must stay outside the repository (platform-relative containment)",async()=>{const {root,path}=await repo();try{
+ // Inside (direct or nested) must throw on every platform: a `${repository}/` prefix match
+ // would miss Windows backslash separators and silently accept an in-tree worktree root.
+ assert.throws(()=>new Workspaces(path,join(path,"trees")),/outside the source working tree/);
+ assert.throws(()=>new Workspaces(path,join(path,"deeply","nested","trees")),/outside the source working tree/);
+ assert.throws(()=>new Workspaces(path,path),/outside the source working tree/);
+ // Siblings sharing the repository name as a prefix are outside and must be accepted.
+ assert.doesNotThrow(()=>new Workspaces(path,join(root,"repo-trees")));
+ assert.doesNotThrow(()=>new Workspaces(path,join(root,"other")));
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}});
 test("scope check rejects out of module changes",async()=>{const {root,path}=await repo();try{
  const service=new Workspaces(path,join(root,"trees"));const ws=await service.create("scopes",1,await service.head());await writeFile(join(ws.path,"outside.txt"),"x");await assert.rejects(service.changed(ws,["module"]),/unreserved/);
  }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}});
