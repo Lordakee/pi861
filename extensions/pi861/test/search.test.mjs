@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { webSearch } from "../src/search.ts";
+import { resolveSearchProvider, searchPayload, searchResults, supportedSearchProviders, webSearch } from "../src/search.ts";
 const opts = (impl) => ({ enabled: true, apiKey: "test-only-placeholder", fetch: impl });
 const response = (results) => Response.json({ web: { results } });
 test("disabled or missing-key search does not call a backend", async () => {
@@ -59,4 +59,28 @@ test("a cancelled request never reaches the network", async () => {
 	let calls = 0;
 	await assert.rejects(webSearch("query", opts(async () => { calls++; return response([]); }), controller.signal), /cancel/);
 	assert.equal(calls, 0);
+});
+test("only implemented providers are reported and selectable", async () => {
+	assert.deepEqual(supportedSearchProviders(), ["brave"]);
+	assert.equal(resolveSearchProvider(undefined).id, "brave");
+	let calls = 0;
+	const fake = async () => { calls++; return response([]); };
+	assert.throws(() => resolveSearchProvider("google"), /Unsupported search provider "google"; implemented: brave/);
+	await assert.rejects(webSearch("q", { ...opts(fake), provider: "bing" }), /Unsupported search provider "bing"/);
+	assert.equal(calls, 0);
+});
+test("long search results become paged references instead of inline JSON", async () => {
+	const hits = Array.from({ length: 10 }, (_, index) => ({ title: `t${index}`, url: `https://example.org/${index}`, description: "d".repeat(2000) }));
+	const found = await webSearch("query", { ...opts(async () => response(hits)), maxResults: 10 });
+	assert.equal(found.results.length, 10);
+	const payload = searchPayload(found, 4000);
+	assert.equal(payload.inline, false);
+	assert.match(payload.reference.instruction, /resultRef/i);
+	assert.ok(payload.reference.totalCharacters > 4000);
+	const page = searchResults.read(payload.reference.resultRef, 0);
+	assert.equal(page.complete, false);
+	assert.ok(page.text.startsWith("{\"query\""));
+	const inline = searchPayload(found, 100_000);
+	assert.equal(inline.inline, true);
+	assert.equal(inline.value.results.length, 10);
 });
