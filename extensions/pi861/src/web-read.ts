@@ -156,6 +156,7 @@ export function isBlockedAddress(address: string): boolean {
 	}
 	if ((g0 ?? 0) === 0x0100 && v6.slice(1).every((group) => group === 0)) return true; // discard-only
 	if ((g0 ?? 0) === 0x2001 && (g1 ?? 0) === 0x0DB8) return true; // documentation
+	if ((g0 ?? 0) === 0x2001 && (g1 ?? 0) === 0x0000) return true; // Teredo (2001::/32)
 	if (((g0 ?? 0) & 0xFE00) === 0xFC00) return true; // unique local
 	if (((g0 ?? 0) & 0xFFC0) === 0xFE80) return true; // link-local
 	if (((g0 ?? 0) & 0xFF00) === 0xFF00) return true; // multicast
@@ -200,7 +201,9 @@ export function authorizeTarget(rawUrl: string | URL, policy: WebEndpointPolicy)
 		}
 	}
 	if (policy.publicHosts.some((pattern) => hostMatches(host, pattern))) {
-		if (effectivePort(url) !== 80 && effectivePort(url) !== 443) throw new Error(`Web reading refuses non-standard port ${url.port || "(default)"}`);
+		const port = effectivePort(url);
+		const expected = url.protocol === "https:" ? 443 : 80;
+		if (port !== expected) throw new Error(`Web reading refuses ${url.protocol}// port ${url.port || "(default)"}; only the protocol default is allowed`);
 		return { url, kind: "public" };
 	}
 	throw new Error(`Host "${host}" is not approved for web reading`);
@@ -322,17 +325,35 @@ function cleanControls(input: string): string {
 	return input.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, "");
 }
 
+/** Linear strip of comments and script/style blocks; lazy [\s\S]*? regexes backtrack quadratically on adversarial input. */
+function stripMarkupBlocks(source: string): string {
+	const lower = source.toLowerCase();
+	let out = "";
+	let cursor = 0;
+	while (cursor < source.length) {
+		const nextComment = lower.indexOf("<!--", cursor);
+		const nextScript = lower.indexOf("<script", cursor);
+		const nextStyle = lower.indexOf("<style", cursor);
+		let start = -1;
+		let endTag = "";
+		if (nextComment !== -1 && (start === -1 || nextComment < start)) { start = nextComment; endTag = "-->"; }
+		if (nextScript !== -1 && (start === -1 || nextScript < start)) { start = nextScript; endTag = "</script"; }
+		if (nextStyle !== -1 && (start === -1 || nextStyle < start)) { start = nextStyle; endTag = "</style"; }
+		if (start === -1) break;
+		out += source.slice(cursor, start);
+		const close = lower.indexOf(endTag, start + 1);
+		cursor = close === -1 ? source.length : close + endTag.length; // unterminated block swallows the rest
+	}
+	return out + source.slice(cursor);
+}
+
 export interface ExtractedContent { title: string; text: string; truncated: boolean; }
 
 /** Naive bounded HTML-to-text extraction; removes scripts, styles, comments, tags and control characters. */
 export function extractText(source: string, maxLength = 100_000): ExtractedContent {
 	const titleMatch = /<title[^>]*>([\s\S]{0,4096}?)<\/title\s*>/i.exec(source);
 	const title = titleMatch?.[1] ? cleanControls(decodeEntities(titleMatch[1])).replace(/\s+/g, " ").trim().slice(0, 300) : "";
-	const working = source
-		.replace(/<!--[\s\S]*?-->/g, " ")
-		.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ")
-		.replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ")
-		.replace(/<(?:script|style)\b[^>]*>[\s\S]*$/gi, " ") // unterminated script/style swallows the rest of the document
+	const working = stripMarkupBlocks(source)
 		.replace(/<(?:br|hr)\b[^>]*>/gi, "\n")
 		.replace(/<\/(?:p|div|section|article|aside|header|footer|nav|li|ul|ol|tr|table|tbody|thead|blockquote|pre|h[1-6]|dt|dd)\s*>/gi, "\n")
 		.replace(/<[^>]*>/g, " ");

@@ -323,3 +323,26 @@ test("controlled results page long payloads instead of inlining them", () => {
 	assert.equal(finalPage.nextOffset, finalPage.totalCharacters);
 	assert.equal(JSON.parse(assembled).blob.length, 200_000);
 });
+test("extractText stays linear on adversarial markup padding (M5 review fix)", () => {
+  const hostile = "<div>start</div>" + "<script>aaaa".repeat(30_000) + "</script><div>end</div>";
+  const started = Date.now();
+  const { text } = extractText(hostile);
+  const elapsed = Date.now() - started;
+  assert.match(text, /start/);
+  assert.match(text, /end/);
+  assert.ok(elapsed < 2000, `linear extraction must not stall the host (took ${elapsed}ms)`);
+});
+test("teredo and protocol-default ports are refused (M5 review fix)", async () => {
+  await assert.rejects(
+    readWebPage("http://example.org/", { ...publicOptions(), lookup: lookupOf(["2001::1"]) }),
+    /non-public address|refus/i,
+  );
+  await assert.rejects(
+    readWebPage("http://example.org:443/", { ...publicOptions(), lookup: lookupOf(["93.184.216.34"]) }),
+    /protocol default/,
+  );
+  await assert.rejects(
+    readWebPage("https://example.org:80/", { ...publicOptions(), lookup: lookupOf(["93.184.216.34"]) }),
+    /protocol default/,
+  );
+});
