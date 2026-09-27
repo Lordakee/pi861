@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { AuxiliaryModelService, ModelRuntime, RequestBudget, resolveModelPolicy, UsageLedger } from "../src/live/model-runtime.ts";
-import { ModelFailure } from "../src/routing.ts";
+import { HealthService, ModelFailure } from "../src/routing.ts";
 const targets = [
  {id:"cheap",revision:"1",provider:"test",model:"cheap",quality:1,costRank:1,contextWindow:10000,capabilities:["tools"],enabled:true,account:"acct-a",endpoint:"edge-1",billing:{inputPerMillionTokens:1,outputPerMillionTokens:2},dataEgress:"open"},
  {id:"strong",revision:"1",provider:"test",model:"strong",quality:3,costRank:3,contextWindow:10000,capabilities:["tools"],enabled:true,account:"acct-b",endpoint:"edge-2",billing:{inputPerMillionTokens:3,outputPerMillionTokens:6},dataEgress:"open"},
@@ -166,6 +166,25 @@ test("external planner sessions are reserved and metered with unknown usage",asy
  assert.equal(breakdown["kind:auxiliary:planner"].requests,1);
  assert.equal(breakdown["kind:auxiliary:planner"].inputTokens,"unknown");
  assert.equal(breakdown["kind:auxiliary:planner"].cost,"unknown");
+});
+test("local budget exhaustion neither fails over nor pollutes shared health (m1rev-F004)",async()=>{
+ const shared=new HealthService();const seen=[];
+ const runtime=new ModelRuntime(policy({maxRequests:1}),async m=>{seen.push(m.id);return m.id;},async()=>true,undefined,()=>{},{health:shared});
+ try{assert.equal(await runtime.call({},signal()),"cheap");
+  await assert.rejects(runtime.call({},signal()),/budget_exhausted/);
+  assert.deepEqual(seen,["cheap"]);
+  assert.deepEqual(runtime.checkpoint.recovery.health,[]);
+  assert.equal(shared.entry(targets[0]),undefined);
+  assert.equal(shared.entry(targets[1]),undefined);}finally{runtime.close();}
+});
+test("auxiliary reservations do not replay across instances (m1rev-F003)",async()=>{
+ const budgetStore=memstore({limit:10,used:0,intents:{}});
+ const make=()=>new AuxiliaryModelService({targets,preferred:"cheap",requirements:policy().requirements,
+  recovery:{failoverEnabled:true,failbackEnabled:false,probeIntervalMs:20,maxProbeIntervalMs:100,requiredProbeSuccesses:2},maxAttempts:3,requestTimeoutMs:500},
+  async()=>({text:"ok",usage:usage(1,1)}),{budget:new RequestBudget(budgetStore.store)});
+ await make().generate("intake","same prompt",signal());
+ await make().generate("intake","same prompt",signal());
+ assert.equal(budgetStore.state.used,2);
 });
 test("policy layers narrow the inherited policy",()=>{
  const base=policy();

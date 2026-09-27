@@ -88,7 +88,7 @@ export interface HealthEntry {
 	nextProbeAt: number;
 	ready: boolean;
 }
-export type FailureKind = "transient" | "rate-limit" | "auth" | "quota" | "invalid" | "context" | "cancelled";
+export type FailureKind = "transient" | "rate-limit" | "auth" | "quota" | "invalid" | "context" | "cancelled" | "budget_exhausted";
 
 function validateRequirements(requirements: Requirements): void {
 	if (!Number.isFinite(requirements.minQuality) || requirements.minQuality < 0 ||
@@ -110,7 +110,7 @@ function validateBilling(billing: ModelBilling): void {
 	if (!billing || !Number.isFinite(billing.inputPerMillionTokens) || billing.inputPerMillionTokens < 0 ||
 		!Number.isFinite(billing.outputPerMillionTokens) || billing.outputPerMillionTokens < 0 ||
 		(billing.cacheReadPerMillionTokens !== undefined && (!Number.isFinite(billing.cacheReadPerMillionTokens) || billing.cacheReadPerMillionTokens < 0)) ||
-		(billing.cacheWritePerMillionTokens !== undefined && (!Number.isFinite(billing.cacheWritePerMillionTokens) || billing.cacheWritePerMillionTokens < 0))) throw new Error("Invalid model configuration");
+		(billing.cacheWritePerMillionTokens !== undefined && (!Number.isFinite(billing.cacheWritePerMillionTokens) || billing.cacheWritePerMillionTokens < 0))) throw new Error("Invalid model configuration: billing");
 }
 export function eligible(target: ModelTarget, requirements: Requirements): boolean {
 	return target.enabled && requirements.allowedIds.includes(target.id) &&
@@ -192,6 +192,11 @@ export class HealthService {
 			Math.min(backoff.maxProbeIntervalMs, backoff.probeIntervalMs * 2 ** Math.min(entry.failures - 1, 20)));
 		return { ...entry };
 	}
+	/** Traffic success confirms the domain without erasing shared probe bookkeeping; probe state changes only through finishProbe or an explicit clear. */
+	markReady(target: ModelTarget): void {
+		const entry = this.entries.get(HealthService.key(target));
+		if (entry) entry.ready = true;
+	}
 	/** Releases an admitted probe without recording a health outcome. */
 	cancelProbe(target: ModelTarget): void {
 		this.inFlight.delete(HealthService.key(target));
@@ -217,13 +222,18 @@ export class ModelRecovery {
 		validateOptions(options);
 		this.targets = new Map();
 		for (const target of targets) {
-			if (!target.id || !target.revision || !target.provider || !target.model ||
-				this.targets.has(target.id) || !Number.isFinite(target.quality) || target.quality < 0 ||
-				!Number.isFinite(target.costRank) || target.costRank < 0 ||
-				!Number.isSafeInteger(target.contextWindow) || target.contextWindow <= 0 ||
-				!target.account || !target.endpoint || !target.dataEgress) {
-				throw new Error("Invalid or duplicate model configuration");
-			}
+			const fields: [string, boolean][] = [
+				["id", Boolean(target.id)], ["revision", Boolean(target.revision)],
+				["provider", Boolean(target.provider)], ["model", Boolean(target.model)],
+				["duplicate id", !this.targets.has(target.id)],
+				["quality", Number.isFinite(target.quality) && target.quality >= 0],
+				["costRank", Number.isFinite(target.costRank) && target.costRank >= 0],
+				["contextWindow", Number.isSafeInteger(target.contextWindow) && target.contextWindow > 0],
+				["account", Boolean(target.account)], ["endpoint", Boolean(target.endpoint)],
+				["billing", Boolean(target.billing)], ["dataEgress", Boolean(target.dataEgress)],
+			];
+			const invalid = fields.find(([, valid]) => !valid);
+			if (invalid) throw new Error(`Invalid model configuration: ${invalid[0]}`);
 			validateBilling(target.billing);
 			this.targets.set(target.id, structuredClone(target));
 		}
@@ -311,7 +321,7 @@ export class ModelRecovery {
 		if (!this.owns(attempt)) return false;
 		this.attempt = undefined;
 		const target = this.targets.get(attempt.configId);
-		if (target) this.health.clear(target);
+		if (target) this.health.markReady(target);
 		return true;
 	}
 	/** Cancellation never authorizes a new provider call. */
@@ -324,7 +334,7 @@ export class ModelRecovery {
 	fail(attempt: Attempt, kind: FailureKind, now: number, retryAfterMs = 0): boolean {
 		if (!this.owns(attempt)) return false;
 		this.cancel(attempt);
-		if (kind === "cancelled" || kind === "invalid" || kind === "context") return false;
+		if (kind === "cancelled" || kind === "invalid" || kind === "context" || kind === "budget_exhausted") return false;
 		const failed = this.targets.get(attempt.configId);
 		if (failed) this.health.recordFailure(failed, now, retryAfterMs, this.options);
 		if (!this.options.failoverEnabled) return false;

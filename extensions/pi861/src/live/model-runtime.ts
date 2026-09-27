@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { digest } from "../memory.ts";
 import { abortable, type AttemptDeadlines, type TransportHooks } from "./deadline.ts";
 import {
@@ -273,7 +274,7 @@ export class ModelRuntime<TContext, TResponse> {
 		await this.choose(effective); this.recovery.atBoundary();
 		try {
 			return await inferWithRecovery(this.recovery, async (target, attempt, requestSignal, hooks) => {
-				if (this.requests >= this.policy.maxRequests) throw new ModelFailure("quota");
+				if (this.requests >= this.policy.maxRequests) throw new ModelFailure("budget_exhausted");
 				await this.services.budget?.reserve(digest(["main", attempt.generation, attempt.configId, attempt.configRevision]));
 				this.requests++; this.persist();
 				try {
@@ -330,6 +331,8 @@ export interface AuxiliaryServices {
  * so failover never silently downgrades an auxiliary call.
  */
 export class AuxiliaryModelService {
+	/** Per-startup salt: a restarted instance must never hit a predecessor's reservation intent. */
+	private readonly instanceSalt = randomUUID();
 	private readonly config: AuxiliaryModelConfig;
 	private readonly recovery: ModelRecovery;
 	private readonly infer: AuxiliaryTransport;
@@ -351,7 +354,7 @@ export class AuxiliaryModelService {
 	async generate(kind: string, prompt: string, signal: AbortSignal): Promise<string> {
 		if (!kind || typeof prompt !== "string") throw new Error("Invalid auxiliary call");
 		const result = await inferWithRecovery(this.recovery, async (target, attempt, requestSignal, hooks) => {
-			await this.services.budget?.reserve(digest(["auxiliary", kind, prompt, attempt.generation, attempt.configId]));
+			await this.services.budget?.reserve(digest(["auxiliary", this.instanceSalt, kind, prompt, attempt.generation, attempt.configId]));
 			try {
 				const outcome = await this.infer(target, prompt, requestSignal, hooks);
 				if (this.services.ledger) await this.services.ledger.record(target, "auxiliary", outcome.usage, `auxiliary:${kind}`).catch(() => undefined);
