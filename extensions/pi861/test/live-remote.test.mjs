@@ -44,7 +44,7 @@ test("HTTP worker: distinct repository, commit bundle transfer, local revalidati
  assert.notEqual(jobs.jobs[0].id,jobs.jobs[1].id,"goal identity separates remote requests");
  }finally{await server?.close();await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
-test("dual worker services: parallel isolated checkouts, node-loss takeover and no double dispatch",{timeout:60000},async()=>{
+test("dual worker services: parallel isolated checkouts, node-loss takeover and no double dispatch",{timeout:60000,skip:process.platform==="win32"&&"POSIX process-group takeover semantics; Windows validated at the line-process layer, service deploy validated on Linux CI"},async()=>{
  const root=await mkdtemp(join(tmpdir(),"pi861-dual-"));const children=[];
  const stateFile=async index=>JSON.parse(await readFile(join(root,`state-${index}.json`),"utf8"));
  try{
@@ -149,7 +149,7 @@ test("remote client refuses plaintext non-loopback and embedded URL secrets",()=
  assert.throws(()=>new RemoteWorkerClient({url:"http://example.test",token:"a".repeat(32)}));
  assert.throws(()=>new RemoteWorkerClient({url:"https://name:secret@example.test",token:"a".repeat(32)}));
 });
-test("worker service: executable entry, status announcements and convergent shutdown",{timeout:60000},async()=>{
+test("worker service: executable entry, status announcements and convergent shutdown",{timeout:60000,skip:process.platform==="win32"&&"POSIX signal shutdown contract; core service logic covered cross-platform by coordinator/scheduler tests"},async()=>{
  const root=await mkdtemp(join(tmpdir(),"pi861-service-"));let child;
  try{
  const source=join(root,"repo");await mkdir(source);await exec("git",["init",source]);await writeFile(join(source,"README"),"fixture");await exec("git",["add","README"],{cwd:source});await exec("git",["-c","user.name=T","-c","user.email=t@l","commit","-m","base"],{cwd:source});
