@@ -92,6 +92,14 @@ https://api-dashboard.search.brave.com/app/documentation/web-search
 SearXNG 使用实例的 `search?format=json` 接口：
 https://docs.searxng.org/user/configured_engines.html
 
+## 受控结果读取
+
+超限 Skill/MCP 工具结果返回 `resultRef` 引用，不内联全文。
+用 `pi861_capabilities action=result` 分页读取（16,000 字符/页，`offset`/`nextOffset`/`complete`）。
+可选 `pointer` 参数按 RFC 6901 字符串形式选取字段（空串或省略=整个结果）：
+只接受自有属性与有效数组下标，拒绝 URI fragment、通配符、查询式与非法转义；
+pointer 在 owner 授权通过之后才解析，不能扩大读取权限；分页与 offset 上限以选中值的序列化为准。
+
 ## 记忆
 
 - 默认自动记录用户输入为 `candidate`，不是自动确认事实。

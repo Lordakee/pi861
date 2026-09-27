@@ -267,6 +267,11 @@ export function installCapabilities(pi: CapabilityHost, options: CapabilityOptio
 				sourceId: { type: "string" },
 				resultRef: { type: "string" },
 				offset: { type: "integer", minimum: 0 },
+				pointer: {
+					type: "string",
+					description:
+						"RFC 6901 pointer selecting a field of the result; empty or omitted reads the whole artifact",
+				},
 			},
 			required: ["action"],
 			additionalProperties: false,
@@ -318,6 +323,7 @@ export function installCapabilities(pi: CapabilityHost, options: CapabilityOptio
 					requireText(args.resultRef),
 					{ role, ...options.principal?.() },
 					Number(args.offset ?? 0),
+					typeof args.pointer === "string" ? args.pointer : "",
 				);
 			else throw new Error("Invalid capability action");
 			return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} };
