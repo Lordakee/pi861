@@ -41,6 +41,8 @@ export interface SkillState {
 	candidates: SkillCandidate[];
 	versions: RuntimeSkill[];
 	active: Record<string, string>;
+	/** Rollback fence (AX5): revisions withdrawn from NEW activation, keyed by skill id. Optional for pre-fence states. */
+	revoked?: Record<string, string[]>;
 	provenance?: Record<string, { group: string; sourceSet: string }>;
 	results?: Record<string, { text: string } & ResultOwner>;
 }
@@ -165,6 +167,8 @@ function rebuild(state: SkillState): SkillCatalog {
 		const version = state.versions.find((skill) => skill.id === id && skill.revision === revision);
 		if (version) catalog.publish(version);
 	}
+	for (const [id, revisions] of Object.entries(state.revoked ?? {}))
+		for (const revision of revisions) catalog.revoke(id, revision);
 	return catalog;
 }
 
@@ -401,9 +405,17 @@ export class SkillRepository {
 	}
 	async rollback(id: string, revision: string): Promise<void> {
 		await this.store.update((state) => {
-			if (!state.versions.some((skill) => skill.id === id && skill.revision === revision))
-				throw new Error("Unknown published skill version");
+			const order = state.versions.filter((skill) => skill.id === id).map((skill) => skill.revision);
+			if (!order.includes(revision)) throw new Error("Unknown published skill version");
+			// Rollback fence (AX5): every version published after the restore target is withdrawn from NEW
+			// activations; rolling back TO a revision lifts its earlier revocation. Running activations are
+			// pinned snapshots and stay unaffected (R4.10).
+			const revoked = [
+				...new Set([...(state.revoked?.[id] ?? []), ...order.slice(order.indexOf(revision) + 1)]),
+			].filter((item) => item !== revision);
 			state.active[id] = revision;
+			if (revoked.length) (state.revoked ??= {})[id] = revoked;
+			else if (state.revoked) delete state.revoked[id];
 		});
 	}
 	/** Uninstalls a source package plus every runtime version compiled from it. Running activations keep their pinned snapshot; restore revalidates. */
@@ -418,6 +430,12 @@ export class SkillRepository {
 			for (const skill of derived) {
 				if (state.active[skill.id] === skill.revision) delete state.active[skill.id];
 				delete state.provenance?.[`${skill.id}@${skill.revision}`];
+				const revoked = state.revoked?.[skill.id];
+				if (revoked) {
+					const kept = revoked.filter((item) => item !== skill.revision);
+					if (kept.length) (state.revoked ??= {})[skill.id] = kept;
+					else delete state.revoked?.[skill.id];
+				}
 			}
 			state.candidates = state.candidates.filter(
 				(candidate) => !candidate.skill.sources.some((source) => source.id === id),

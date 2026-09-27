@@ -235,7 +235,7 @@ test("affected rebuild flags published versions whose source set changed (R4.10)
   const staleAfter = await repo.staleVersions();
   assert.ok(!staleAfter.some((item) => item.revision === rebuilt.skill.revision)); // fresh version is not stale
 });
-test("updates do not replace a running activation; both revisions stay resolvable (R4.10)", async t => {
+test("updates do not replace a running activation; rollback fences revoked revisions (R4.10/AX5)", async t => {
   const { repo, directory } = setup(t);
   const client = new McpClient({ id: "local", accountId: "a", transport: { kind: "stdio", process: { command: process.execPath, args: [fileURLToPath(new URL("./fixtures/mcp-server.mjs", import.meta.url))], cwd: process.cwd() } } });
   t.after(() => client.close());
@@ -256,10 +256,13 @@ test("updates do not replace a running activation; both revisions stay resolvabl
   const activeRevision = await publishedRevision();
   assert.notEqual(activation1.skillRevision, activeRevision); // browse moved on
   assert.match((await tools.get(name1).execute("pin2", { project: "p1" })).content[0].text, /looked up p1/); // running activation still works, pinned to its revision
-  await repo.bindingPlan(id, activation1.skillRevision, activation1.branchIds, "execute", role, []); // old revision stays resolvable
+  await repo.bindingPlan(id, activation1.skillRevision, activation1.branchIds, "execute", role, []); // a superseded revision stays resolvable while never rolled back
   await repo.rollback(id, activation1.skillRevision);
-  await repo.bindingPlan(id, activeRevision, (await repo.catalog()).branches(role, id).map((b) => b.id), "execute", role, []); // rollback does not delete versions
-  assert.match((await tools.get(name1).execute("pin3", { project: "p1" })).content[0].text, /looked up p1/);
+  await assert.rejects(repo.bindingPlan(id, activeRevision, (await repo.catalog()).branches(role, id).map((b) => b.id), "execute", role, []), /rolled back/); // the rollback-revoked revision is fenced from NEW activations (AX5)
+  await repo.bindingPlan(id, activation1.skillRevision, activation1.branchIds, "execute", role, []); // the restored active revision activates again
+  await repo.rollback(id, activeRevision); // rolling back TO a revoked revision lifts the fence
+  await repo.bindingPlan(id, activeRevision, (await repo.catalog()).branches(role, id).map((b) => b.id), "execute", role, []);
+  assert.match((await tools.get(name1).execute("pin3", { project: "p1" })).content[0].text, /looked up p1/); // the running activation keeps its pinned snapshot through both rollbacks (R4.10)
 });
 test("same tool bound to two resources keeps distinct metadata and closures (R5.5)", async t => {
   const { repo, directory } = setup(t);

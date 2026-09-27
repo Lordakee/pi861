@@ -63,6 +63,7 @@ export class SkillCatalog {
 	private readonly originals = new Map<string, RawSkill>();
 	private readonly published = new Map<string, RuntimeSkill>();
 	private readonly versions = new Map<string, RuntimeSkill>();
+	private readonly revoked = new Set<string>();
 	archive(raw: RawSkill): string {
 		if (!raw.id || !raw.revision || typeof raw.files["SKILL.md"] !== "string")
 			throw new Error("Missing skill source");
@@ -132,6 +133,10 @@ export class SkillCatalog {
 			.filter((branch) => branch.tools.every((tool) => granted(role, tool)))
 			.map(({ id, when, environment }) => ({ id, when, environment: [...environment] }));
 	}
+	/** Withdraws a published version from NEW activations (rollback fence, AX5). Already-activated instances keep their pinned snapshot (R4.10). */
+	revoke(skillId: string, revision: string): void {
+		this.revoked.add(JSON.stringify([skillId, revision]));
+	}
 	activate(
 		role: Role,
 		skillId: string,
@@ -141,8 +146,15 @@ export class SkillCatalog {
 		environment: string[],
 		definitions: ToolDefinition[],
 	): Activation {
-		const skill = this.versions.get(JSON.stringify([skillId, revision]));
+		const key = JSON.stringify([skillId, revision]);
+		const skill = this.versions.get(key);
 		if (!skill || !role.skillIds.includes(skillId)) throw new Error("Skill not available");
+		if (this.revoked.has(key))
+			throw new Error(
+				`Skill ${skillId} revision ${revision} was rolled back and is fenced from activation; the active revision is ${
+					this.published.get(skillId)?.revision ?? "unknown"
+				}`,
+			);
 		if (!branchIds.length || new Set(branchIds).size !== branchIds.length)
 			throw new Error("Select distinct skill branches");
 		const branches = branchIds.map((id) => {

@@ -33,7 +33,7 @@ async function removeTree(path) {
 }
 const timeoutMs = Number(process.env.PI861_TEST_TIMEOUT_MS ?? 60000);
 
-test("AX5 host skills: auto-grouping merges two generic debug sources, branches are mutually exclusive, default prompts stay clean, updates pin revisions and rollback restores (deterministic local provider fixture; not model-quality evidence)", { skip: !cli, timeout: timeoutMs }, async () => {
+test("AX5 host skills: auto-grouping merges two generic debug sources, branches are mutually exclusive, default prompts stay clean, updates pin revisions, rollback restores and fences (deterministic local provider fixture; not model-quality evidence)", { skip: !cli, timeout: timeoutMs }, async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi861-ax5-"));
 	let session;
 	try {
@@ -150,14 +150,17 @@ test("AX5 host skills: auto-grouping merges two generic debug sources, branches 
 		assert.equal(reactivation.isError, false); // a fresh activation can choose the new revision
 		assert.ok((await activations()).some((entry) => entry.skillId === "debug" && entry.revision === revision2));
 
-		// Rollback: the catalog returns to the old revision.
+		// Rollback: the catalog returns to the old revision and fences the revoked one from NEW activations (AX5).
 		await session.command("prompt", { message: `/skills rollback debug ${revision1}` }, signal);
 		assert.equal((await browse("development/debug")).skills[0].revision, revision1);
-		// Defect record (AX5): SkillCatalog.activate resolves ANY archived version, so a NEW activation of
-		// the rolled-back revision is currently still permitted by the host. Minimal provable assertion pins
-		// today's behavior; when the kernel fences revoked revisions, flip this to assert rejection.
 		const revoked = await capabilityResult(`ax5-activate debug ${revision2} general`);
-		assert.equal(revoked.isError, false, "kernel defect: revoked revisions are not fenced from activation (see report)");
+		assert.equal(revoked.isError, true); // the rolled-back revision is fenced from new activation
+		assert.match(revoked.text, /rolled back/);
+		const restored = await capabilityResult(`ax5-activate debug ${revision1} general`);
+		assert.equal(restored.isError, false); // the restored active revision activates
+		const afterRollback = await activations();
+		assert.ok(afterRollback.some((entry) => entry.skillId === "debug" && entry.revision === revision2)); // the running activation keeps its pinned revision through the rollback (R4.10)
+		assert.ok(afterRollback.some((entry) => entry.skillId === "debug" && entry.revision === revision1));
 	} finally {
 		await session?.close();
 		await removeTree(root);
