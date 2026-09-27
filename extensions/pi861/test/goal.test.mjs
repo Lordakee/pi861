@@ -107,3 +107,18 @@ test("clearing invalidates execution and allows a new goal", () => {
 	goal.create("Next task");
 	assert.equal(goal.state.usedRuns, 0);
 });
+test("pause, resume and cancel transitions are explicit", () => {
+	const { goal } = create();
+	assert.throws(() => goal.resume(), /paused/);
+	goal.dispatch();
+	goal.pause("first");
+	goal.pause("again"); // idempotent while paused
+	assert.equal(goal.state.status, "paused");
+	goal.resume();
+	assert.equal(goal.state.status, "active");
+	assert.equal(goal.state.noProgressRuns, 0);
+	goal.clear();
+	assert.throws(() => goal.resume(), /paused/);
+	goal.pause("ignored"); // terminal goals ignore pause
+	assert.equal(goal.state.status, "cancelled");
+});
