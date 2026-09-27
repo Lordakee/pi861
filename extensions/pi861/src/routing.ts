@@ -45,7 +45,13 @@ export interface ModelUsage {
 	cacheWriteTokens: number | null;
 	cost: number | null;
 }
-export const UNKNOWN_USAGE: ModelUsage = { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, cost: null };
+export const UNKNOWN_USAGE: ModelUsage = {
+	inputTokens: null,
+	outputTokens: null,
+	cacheReadTokens: null,
+	cacheWriteTokens: null,
+	cost: null,
+};
 /** Provider-reported cost wins; otherwise known token usage is priced from the target's billing. */
 export function estimateCost(target: ModelTarget, usage: ModelUsage): number | null {
 	if (usage.cost !== null) return usage.cost;
@@ -54,8 +60,13 @@ export function estimateCost(target: ModelTarget, usage: ModelUsage): number | n
 	const cacheWrite = usage.cacheWriteTokens ?? 0;
 	const readRate = target.billing.cacheReadPerMillionTokens ?? target.billing.inputPerMillionTokens;
 	const writeRate = target.billing.cacheWritePerMillionTokens ?? target.billing.inputPerMillionTokens;
-	return (usage.inputTokens * target.billing.inputPerMillionTokens + usage.outputTokens * target.billing.outputPerMillionTokens +
-		cacheRead * readRate + cacheWrite * writeRate) / 1_000_000;
+	return (
+		(usage.inputTokens * target.billing.inputPerMillionTokens +
+			usage.outputTokens * target.billing.outputPerMillionTokens +
+			cacheRead * readRate +
+			cacheWrite * writeRate) /
+		1_000_000
+	);
 }
 
 export type ExecutionMode = "direct" | "fixed" | "dynamic";
@@ -88,41 +99,77 @@ export interface HealthEntry {
 	nextProbeAt: number;
 	ready: boolean;
 }
-export type FailureKind = "transient" | "rate-limit" | "auth" | "quota" | "invalid" | "context" | "cancelled" | "budget_exhausted";
+export type FailureKind =
+	| "transient"
+	| "rate-limit"
+	| "auth"
+	| "quota"
+	| "invalid"
+	| "context"
+	| "cancelled"
+	| "budget_exhausted";
 
 function validateRequirements(requirements: Requirements): void {
-	if (!Number.isFinite(requirements.minQuality) || requirements.minQuality < 0 ||
-		!Number.isSafeInteger(requirements.contextTokens) || requirements.contextTokens < 0 ||
+	if (
+		!Number.isFinite(requirements.minQuality) ||
+		requirements.minQuality < 0 ||
+		!Number.isSafeInteger(requirements.contextTokens) ||
+		requirements.contextTokens < 0 ||
 		requirements.allowedIds.length === 0 ||
-		(requirements.dataBoundary !== undefined && (typeof requirements.dataBoundary !== "string" || !requirements.dataBoundary))) throw new Error("Invalid model requirements");
+		(requirements.dataBoundary !== undefined &&
+			(typeof requirements.dataBoundary !== "string" || !requirements.dataBoundary))
+	)
+		throw new Error("Invalid model requirements");
 }
 function validateOptions(options: RecoveryOptions): void {
-	if (typeof options.failoverEnabled !== "boolean" || typeof options.failbackEnabled !== "boolean" ||
-		!Number.isSafeInteger(options.probeIntervalMs) || options.probeIntervalMs <= 0 ||
-		!Number.isSafeInteger(options.maxProbeIntervalMs) || options.maxProbeIntervalMs < options.probeIntervalMs ||
-		!Number.isSafeInteger(options.requiredProbeSuccesses) || options.requiredProbeSuccesses < 1 ||
-		(options.maxConcurrentProbes !== undefined && (!Number.isSafeInteger(options.maxConcurrentProbes) || options.maxConcurrentProbes < 1)) ||
-		(options.probeBudget !== undefined && (!Number.isSafeInteger(options.probeBudget) || options.probeBudget < 0))) {
+	if (
+		typeof options.failoverEnabled !== "boolean" ||
+		typeof options.failbackEnabled !== "boolean" ||
+		!Number.isSafeInteger(options.probeIntervalMs) ||
+		options.probeIntervalMs <= 0 ||
+		!Number.isSafeInteger(options.maxProbeIntervalMs) ||
+		options.maxProbeIntervalMs < options.probeIntervalMs ||
+		!Number.isSafeInteger(options.requiredProbeSuccesses) ||
+		options.requiredProbeSuccesses < 1 ||
+		(options.maxConcurrentProbes !== undefined &&
+			(!Number.isSafeInteger(options.maxConcurrentProbes) || options.maxConcurrentProbes < 1)) ||
+		(options.probeBudget !== undefined && (!Number.isSafeInteger(options.probeBudget) || options.probeBudget < 0))
+	) {
 		throw new Error("Invalid recovery options");
 	}
 }
 function validateBilling(billing: ModelBilling): void {
-	if (!billing || !Number.isFinite(billing.inputPerMillionTokens) || billing.inputPerMillionTokens < 0 ||
-		!Number.isFinite(billing.outputPerMillionTokens) || billing.outputPerMillionTokens < 0 ||
-		(billing.cacheReadPerMillionTokens !== undefined && (!Number.isFinite(billing.cacheReadPerMillionTokens) || billing.cacheReadPerMillionTokens < 0)) ||
-		(billing.cacheWritePerMillionTokens !== undefined && (!Number.isFinite(billing.cacheWritePerMillionTokens) || billing.cacheWritePerMillionTokens < 0))) throw new Error("Invalid model configuration: billing");
+	if (
+		!billing ||
+		!Number.isFinite(billing.inputPerMillionTokens) ||
+		billing.inputPerMillionTokens < 0 ||
+		!Number.isFinite(billing.outputPerMillionTokens) ||
+		billing.outputPerMillionTokens < 0 ||
+		(billing.cacheReadPerMillionTokens !== undefined &&
+			(!Number.isFinite(billing.cacheReadPerMillionTokens) || billing.cacheReadPerMillionTokens < 0)) ||
+		(billing.cacheWritePerMillionTokens !== undefined &&
+			(!Number.isFinite(billing.cacheWritePerMillionTokens) || billing.cacheWritePerMillionTokens < 0))
+	)
+		throw new Error("Invalid model configuration: billing");
 }
 export function eligible(target: ModelTarget, requirements: Requirements): boolean {
-	return target.enabled && requirements.allowedIds.includes(target.id) &&
-		target.quality >= requirements.minQuality && target.contextWindow >= requirements.contextTokens &&
+	return (
+		target.enabled &&
+		requirements.allowedIds.includes(target.id) &&
+		target.quality >= requirements.minQuality &&
+		target.contextWindow >= requirements.contextTokens &&
 		requirements.capabilities.every((capability) => target.capabilities.includes(capability)) &&
-		(requirements.dataBoundary === undefined || target.dataEgress === requirements.dataBoundary);
+		(requirements.dataBoundary === undefined || target.dataEgress === requirements.dataBoundary)
+	);
 }
 export function selectInitial(
-	targets: readonly ModelTarget[], requirements: Requirements, assessment: Assessment,
+	targets: readonly ModelTarget[],
+	requirements: Requirements,
+	assessment: Assessment,
 ): { mode: ExecutionMode; configId: string } {
 	validateRequirements(requirements);
-	const candidates = targets.filter((target) => eligible(target, requirements))
+	const candidates = targets
+		.filter((target) => eligible(target, requirements))
 		.sort((a, b) => a.costRank - b.costRank || a.id.localeCompare(b.id));
 	const target = candidates[0];
 	if (!target) throw new Error("No authorized model satisfies the task");
@@ -140,8 +187,13 @@ export class HealthService {
 	private readonly probeBudget: number;
 	private probes = 0;
 	constructor(options: { maxConcurrentProbes?: number; probeBudget?: number } = {}) {
-		if (options.maxConcurrentProbes !== undefined && (!Number.isSafeInteger(options.maxConcurrentProbes) || options.maxConcurrentProbes < 1)) throw new Error("Invalid probe concurrency");
-		if (options.probeBudget !== undefined && (!Number.isSafeInteger(options.probeBudget) || options.probeBudget < 0)) throw new Error("Invalid probe budget");
+		if (
+			options.maxConcurrentProbes !== undefined &&
+			(!Number.isSafeInteger(options.maxConcurrentProbes) || options.maxConcurrentProbes < 1)
+		)
+			throw new Error("Invalid probe concurrency");
+		if (options.probeBudget !== undefined && (!Number.isSafeInteger(options.probeBudget) || options.probeBudget < 0))
+			throw new Error("Invalid probe budget");
 		this.maxConcurrentProbes = options.maxConcurrentProbes ?? 1;
 		this.probeBudget = options.probeBudget ?? Number.POSITIVE_INFINITY;
 	}
@@ -158,19 +210,30 @@ export class HealthService {
 	clear(target: ModelTarget): void {
 		this.entries.delete(HealthService.key(target));
 	}
-	recordFailure(target: ModelTarget, now: number, retryAfterMs: number, backoff: { probeIntervalMs: number; maxProbeIntervalMs: number }): HealthEntry {
+	recordFailure(
+		target: ModelTarget,
+		now: number,
+		retryAfterMs: number,
+		backoff: { probeIntervalMs: number; maxProbeIntervalMs: number },
+	): HealthEntry {
 		const previous = this.entries.get(HealthService.key(target));
 		const failures = (previous?.failures ?? 0) + 1;
 		const delay = Math.min(backoff.maxProbeIntervalMs, backoff.probeIntervalMs * 2 ** Math.min(failures - 1, 20));
 		const entry: HealthEntry = {
-			failures, successes: 0, ready: false,
+			failures,
+			successes: 0,
+			ready: false,
 			nextProbeAt: now + Math.max(delay, Number.isFinite(retryAfterMs) ? Math.max(0, retryAfterMs) : 0),
 		};
 		this.entries.set(HealthService.key(target), entry);
 		return { ...entry };
 	}
 	/** Admission for one probe: requires an unhealthy entry, single-flight per domain, global backpressure and a shared budget. */
-	beginProbe(target: ModelTarget, now: number, backoff: { probeIntervalMs: number; maxProbeIntervalMs: number }): boolean {
+	beginProbe(
+		target: ModelTarget,
+		now: number,
+		_backoff: { probeIntervalMs: number; maxProbeIntervalMs: number },
+	): boolean {
 		const key = HealthService.key(target);
 		const entry = this.entries.get(key);
 		if (!entry || entry.ready || now < entry.nextProbeAt) return false;
@@ -180,7 +243,12 @@ export class HealthService {
 		this.probes++;
 		return true;
 	}
-	finishProbe(target: ModelTarget, successful: boolean, now: number, backoff: { probeIntervalMs: number; maxProbeIntervalMs: number; requiredProbeSuccesses: number }): HealthEntry | undefined {
+	finishProbe(
+		target: ModelTarget,
+		successful: boolean,
+		now: number,
+		backoff: { probeIntervalMs: number; maxProbeIntervalMs: number; requiredProbeSuccesses: number },
+	): HealthEntry | undefined {
 		const key = HealthService.key(target);
 		if (!this.inFlight.delete(key)) return undefined;
 		const entry = this.entries.get(key);
@@ -188,8 +256,11 @@ export class HealthService {
 		entry.successes = successful ? entry.successes + 1 : 0;
 		if (!successful) entry.failures++;
 		entry.ready = entry.successes >= backoff.requiredProbeSuccesses;
-		entry.nextProbeAt = now + (successful ? backoff.probeIntervalMs :
-			Math.min(backoff.maxProbeIntervalMs, backoff.probeIntervalMs * 2 ** Math.min(entry.failures - 1, 20)));
+		entry.nextProbeAt =
+			now +
+			(successful
+				? backoff.probeIntervalMs
+				: Math.min(backoff.maxProbeIntervalMs, backoff.probeIntervalMs * 2 ** Math.min(entry.failures - 1, 20)));
 		return { ...entry };
 	}
 	/** Traffic success confirms the domain without erasing shared probe bookkeeping; probe state changes only through finishProbe or an explicit clear. */
@@ -201,7 +272,9 @@ export class HealthService {
 	cancelProbe(target: ModelTarget): void {
 		this.inFlight.delete(HealthService.key(target));
 	}
-	get probeCount(): number { return this.probes; }
+	get probeCount(): number {
+		return this.probes;
+	}
 }
 
 /** Single-owner control state. A service must serialize commands and persist its snapshot. */
@@ -217,20 +290,30 @@ export class ModelRecovery {
 	private preferred: string;
 	private active: string;
 
-	constructor(targets: ModelTarget[], preferred: string, requirements: Requirements, options: RecoveryOptions, sharedHealth?: HealthService) {
+	constructor(
+		targets: ModelTarget[],
+		preferred: string,
+		requirements: Requirements,
+		options: RecoveryOptions,
+		sharedHealth?: HealthService,
+	) {
 		validateRequirements(requirements);
 		validateOptions(options);
 		this.targets = new Map();
 		for (const target of targets) {
 			const fields: [string, boolean][] = [
-				["id", Boolean(target.id)], ["revision", Boolean(target.revision)],
-				["provider", Boolean(target.provider)], ["model", Boolean(target.model)],
+				["id", Boolean(target.id)],
+				["revision", Boolean(target.revision)],
+				["provider", Boolean(target.provider)],
+				["model", Boolean(target.model)],
 				["duplicate id", !this.targets.has(target.id)],
 				["quality", Number.isFinite(target.quality) && target.quality >= 0],
 				["costRank", Number.isFinite(target.costRank) && target.costRank >= 0],
 				["contextWindow", Number.isSafeInteger(target.contextWindow) && target.contextWindow > 0],
-				["account", Boolean(target.account)], ["endpoint", Boolean(target.endpoint)],
-				["billing", Boolean(target.billing)], ["dataEgress", Boolean(target.dataEgress)],
+				["account", Boolean(target.account)],
+				["endpoint", Boolean(target.endpoint)],
+				["billing", Boolean(target.billing)],
+				["dataEgress", Boolean(target.dataEgress)],
 			];
 			const invalid = fields.find(([, valid]) => !valid);
 			if (invalid) throw new Error(`Invalid model configuration: ${invalid[0]}`);
@@ -239,7 +322,9 @@ export class ModelRecovery {
 		}
 		this.requirements = structuredClone(requirements);
 		this.options = { ...options };
-		this.health = sharedHealth ?? new HealthService({ maxConcurrentProbes: options.maxConcurrentProbes ?? 1, probeBudget: options.probeBudget });
+		this.health =
+			sharedHealth ??
+			new HealthService({ maxConcurrentProbes: options.maxConcurrentProbes ?? 1, probeBudget: options.probeBudget });
 		this.requireEligible(preferred);
 		this.preferred = preferred;
 		this.active = preferred;
@@ -250,11 +335,16 @@ export class ModelRecovery {
 		if (!target || !eligible(target, this.requirements)) throw new Error("Ineligible model configuration");
 		return target;
 	}
-	get current(): ModelTarget { return structuredClone(this.requireEligible(this.active)); }
+	get current(): ModelTarget {
+		return structuredClone(this.requireEligible(this.active));
+	}
 	get state() {
 		return {
-			preferred: this.preferred, active: this.active, generation: this.generation,
-			inFlight: this.attempt !== undefined, options: { ...this.options },
+			preferred: this.preferred,
+			active: this.active,
+			generation: this.generation,
+			inFlight: this.attempt !== undefined,
+			options: { ...this.options },
 			health: this.healthEntries(),
 		};
 	}
@@ -266,25 +356,72 @@ export class ModelRecovery {
 		}
 		return entries;
 	}
-	exportState(): { version: 1; preferred: string; active: string; generation: number; options: RecoveryOptions; health: { id: string; revision: string; failures: number; successes: number; nextProbeAt: number; ready: boolean }[] } {
-		return { version: 1, preferred: this.preferred, active: this.active, generation: this.generation, options: { ...this.options },
-			health: this.healthEntries().map((entry) => ({ ...entry, revision: this.targets.get(entry.id)?.revision ?? "" })) };
+	exportState(): {
+		version: 1;
+		preferred: string;
+		active: string;
+		generation: number;
+		options: RecoveryOptions;
+		health: {
+			id: string;
+			revision: string;
+			failures: number;
+			successes: number;
+			nextProbeAt: number;
+			ready: boolean;
+		}[];
+	} {
+		return {
+			version: 1,
+			preferred: this.preferred,
+			active: this.active,
+			generation: this.generation,
+			options: { ...this.options },
+			health: this.healthEntries().map((entry) => ({
+				...entry,
+				revision: this.targets.get(entry.id)?.revision ?? "",
+			})),
+		};
 	}
 	restore(snapshot: ReturnType<ModelRecovery["exportState"]>): void {
-		if (this.attempt || snapshot.version !== 1 || !Number.isSafeInteger(snapshot.generation) || snapshot.generation < 0) throw new Error("Invalid recovery checkpoint");
-		validateOptions(snapshot.options); this.requireEligible(snapshot.preferred); this.requireEligible(snapshot.active);
+		if (
+			this.attempt ||
+			snapshot.version !== 1 ||
+			!Number.isSafeInteger(snapshot.generation) ||
+			snapshot.generation < 0
+		)
+			throw new Error("Invalid recovery checkpoint");
+		validateOptions(snapshot.options);
+		this.requireEligible(snapshot.preferred);
+		this.requireEligible(snapshot.active);
 		const health = new Map<string, HealthEntry>();
 		for (const entry of snapshot.health) {
-			if (health.has(entry.id) || this.targets.get(entry.id)?.revision !== entry.revision || !Number.isSafeInteger(entry.failures) || entry.failures < 1 ||
-				!Number.isSafeInteger(entry.successes) || entry.successes < 0 || !Number.isFinite(entry.nextProbeAt) || typeof entry.ready !== "boolean") throw new Error("Invalid recovery health checkpoint");
-			health.set(entry.id, { failures: entry.failures, successes: entry.successes, nextProbeAt: entry.nextProbeAt, ready: entry.ready });
+			if (
+				health.has(entry.id) ||
+				this.targets.get(entry.id)?.revision !== entry.revision ||
+				!Number.isSafeInteger(entry.failures) ||
+				entry.failures < 1 ||
+				!Number.isSafeInteger(entry.successes) ||
+				entry.successes < 0 ||
+				!Number.isFinite(entry.nextProbeAt) ||
+				typeof entry.ready !== "boolean"
+			)
+				throw new Error("Invalid recovery health checkpoint");
+			health.set(entry.id, {
+				failures: entry.failures,
+				successes: entry.successes,
+				nextProbeAt: entry.nextProbeAt,
+				ready: entry.ready,
+			});
 		}
 		this.dropProbe(); // Never restore an old request's execution authority.
 		for (const [id, value] of health) {
 			const target = this.targets.get(id);
 			if (target) this.health.setEntry(target, value);
 		}
-		this.preferred = snapshot.preferred; this.active = snapshot.active; this.options = { ...snapshot.options };
+		this.preferred = snapshot.preferred;
+		this.active = snapshot.active;
+		this.options = { ...snapshot.options };
 		this.generation = snapshot.generation + 1;
 	}
 
@@ -314,8 +451,11 @@ export class ModelRecovery {
 		return { ...attempt };
 	}
 	private owns(attempt: Attempt): boolean {
-		return this.attempt?.generation === attempt.generation &&
-			this.attempt.configId === attempt.configId && this.attempt.configRevision === attempt.configRevision;
+		return (
+			this.attempt?.generation === attempt.generation &&
+			this.attempt.configId === attempt.configId &&
+			this.attempt.configRevision === attempt.configRevision
+		);
 	}
 	succeed(attempt: Attempt): boolean {
 		if (!this.owns(attempt)) return false;
@@ -360,25 +500,40 @@ export class ModelRecovery {
 		if (!entry || entry.ready || now < entry.nextProbeAt) return undefined;
 		if (!this.health.beginProbe(target, now, this.options)) return undefined;
 		this.probe = {
-			probeId: ++this.probeSequence, generation: this.generation,
-			configId: target.id, configRevision: target.revision,
+			probeId: ++this.probeSequence,
+			generation: this.generation,
+			configId: target.id,
+			configRevision: target.revision,
 		};
 		return { ...this.probe };
 	}
 	finishProbe(probe: Probe, successful: boolean, now: number): boolean {
-		if (!this.options.failbackEnabled || this.probe?.probeId !== probe.probeId ||
-			probe.configId !== this.preferred || this.probe.configRevision !== probe.configRevision) return false;
+		if (
+			!this.options.failbackEnabled ||
+			this.probe?.probeId !== probe.probeId ||
+			probe.configId !== this.preferred ||
+			this.probe.configRevision !== probe.configRevision
+		)
+			return false;
 		this.probe = undefined;
 		const target = this.targets.get(probe.configId);
 		if (!target) return false;
 		return this.health.finishProbe(target, successful, now, this.options) !== undefined;
 	}
 	/** Releases an admitted probe without recording a health outcome (for example on configuration drift). */
-	abandonProbe(): void { this.dropProbe(); }
+	abandonProbe(): void {
+		this.dropProbe();
+	}
 	/** Called before a NEW model request, after outstanding tool results are settled. */
 	atBoundary(pendingOperations = 0): boolean {
-		if (!this.options.failbackEnabled || this.attempt || pendingOperations > 0 ||
-			this.active === this.preferred || !this.health.entry(this.requireEligible(this.preferred))?.ready) return false;
+		if (
+			!this.options.failbackEnabled ||
+			this.attempt ||
+			pendingOperations > 0 ||
+			this.active === this.preferred ||
+			!this.health.entry(this.requireEligible(this.preferred))?.ready
+		)
+			return false;
 		this.requireEligible(this.preferred);
 		this.active = this.preferred;
 		this.dropProbe();
@@ -399,7 +554,11 @@ export class ModelFailure extends Error {
 	}
 }
 
-export interface ToolDispatchDecision { dispatchable: boolean; args?: Record<string, unknown>; error?: string; }
+export interface ToolDispatchDecision {
+	dispatchable: boolean;
+	args?: Record<string, unknown>;
+	error?: string;
+}
 
 /**
  * Streaming-evolution hook for the buffered wrapper: text increments and tool
@@ -417,7 +576,12 @@ export class IncrementBuffer {
 			return true;
 		}
 		const owner = this.owner;
-		if (owner.generation === attempt.generation && owner.configId === attempt.configId && owner.configRevision === attempt.configRevision) return true;
+		if (
+			owner.generation === attempt.generation &&
+			owner.configId === attempt.configId &&
+			owner.configRevision === attempt.configRevision
+		)
+			return true;
 		if (attempt.generation > owner.generation) {
 			this.owner = { ...attempt };
 			this.text = "";
@@ -447,8 +611,13 @@ export class IncrementBuffer {
 		if (slot.complete) return { dispatchable: false, error: "tool call already ended" };
 		slot.complete = true;
 		let parsed: unknown;
-		try { parsed = JSON.parse(slot.args); } catch { return { dispatchable: false, error: "tool arguments are not valid JSON" }; }
-		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return { dispatchable: false, error: "tool arguments must be a JSON object" };
+		try {
+			parsed = JSON.parse(slot.args);
+		} catch {
+			return { dispatchable: false, error: "tool arguments are not valid JSON" };
+		}
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+			return { dispatchable: false, error: "tool arguments must be a JSON object" };
 		return { dispatchable: true, args: parsed as Record<string, unknown> };
 	}
 	/** Accumulated text of the owning attempt. */
@@ -464,18 +633,33 @@ export class IncrementBuffer {
 export async function inferWithRecovery<T>(
 	recovery: ModelRecovery,
 	call: (target: ModelTarget, attempt: Attempt, signal: AbortSignal, hooks: TransportHooks) => Promise<T>,
-	options: { signal: AbortSignal; maxAttempts: number; timeoutMs: number; deadlines?: AttemptDeadlines; now?: () => number },
+	options: {
+		signal: AbortSignal;
+		maxAttempts: number;
+		timeoutMs: number;
+		deadlines?: AttemptDeadlines;
+		now?: () => number;
+	},
 ): Promise<T> {
-	if (!Number.isSafeInteger(options.maxAttempts) || options.maxAttempts < 1 ||
-		!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0) throw new Error("Invalid attempt limits");
+	if (
+		!Number.isSafeInteger(options.maxAttempts) ||
+		options.maxAttempts < 1 ||
+		!Number.isSafeInteger(options.timeoutMs) ||
+		options.timeoutMs <= 0
+	)
+		throw new Error("Invalid attempt limits");
 	const now = options.now ?? Date.now;
 	for (let index = 0; index < options.maxAttempts; index++) {
 		options.signal.throwIfAborted();
 		const attempt = recovery.beginAttempt();
 		const timed = new AbortController();
 		const signal = AbortSignal.any([options.signal, timed.signal]);
-		const clock = new AttemptClock(options.deadlines ?? {}, options.timeoutMs,
-			(phase) => timed.abort(new ModelFailure("transient", 0, phase)), now);
+		const clock = new AttemptClock(
+			options.deadlines ?? {},
+			options.timeoutMs,
+			(phase) => timed.abort(new ModelFailure("transient", 0, phase)),
+			now,
+		);
 		let onAbort: (() => void) | undefined;
 		try {
 			const interrupted = new Promise<never>((_resolve, reject) => {

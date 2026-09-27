@@ -1,7 +1,11 @@
 import { ControlledResults } from "./controlled-results.ts";
 
 /** Explicitly configured web search; no dependency on the current reasoning model. */
-export interface SearchHit { title: string; url: string; snippet: string; }
+export interface SearchHit {
+	title: string;
+	url: string;
+	snippet: string;
+}
 export interface SearchResult {
 	query: string;
 	provider: string;
@@ -32,7 +36,9 @@ export interface SearchProvider {
 	search(query: string, execution: SearchExecution, signal?: AbortSignal): Promise<SearchResult>;
 }
 export function record(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+	return value !== null && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
 }
 function clean(value: unknown, max: number): string {
 	return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, "").slice(0, max) : "";
@@ -59,7 +65,8 @@ async function limitedJson(response: Response, maxBytes: number): Promise<unknow
 	}
 }
 async function braveSearch(query: string, execution: SearchExecution, signal?: AbortSignal): Promise<SearchResult> {
-	if (!query.trim() || query.length > 600 || query.trim().split(/\s+/).length > 75) throw new Error("Search query must contain 1-600 characters and at most 75 words");
+	if (!query.trim() || query.length > 600 || query.trim().split(/\s+/).length > 75)
+		throw new Error("Search query must contain 1-600 characters and at most 75 words");
 	signal?.throwIfAborted();
 	const timeout = AbortSignal.timeout(execution.timeoutMs);
 	const effectiveSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -86,15 +93,23 @@ async function braveSearch(query: string, execution: SearchExecution, signal?: A
 		const item = record(hit);
 		if (!item || typeof item.url !== "string") throw new Error("Malformed search hit");
 		let url: URL;
-		try { url = new URL(item.url); } catch { truncated = true; continue; }
+		try {
+			url = new URL(item.url);
+		} catch {
+			truncated = true;
+			continue;
+		}
 		if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) {
 			truncated = true;
 			continue;
 		}
 		const title = clean(item.title, 300);
 		const snippet = clean(item.description, 2000);
-		if (typeof item.title === "string" && item.title.length > 300 ||
-			typeof item.description === "string" && item.description.length > 2000) truncated = true;
+		if (
+			(typeof item.title === "string" && item.title.length > 300) ||
+			(typeof item.description === "string" && item.description.length > 2000)
+		)
+			truncated = true;
 		results.push({ title, url: url.toString(), snippet });
 	}
 	effectiveSignal.throwIfAborted();
@@ -116,10 +131,27 @@ export async function webSearch(query: string, options: SearchOptions, signal?: 
 	const count = options.maxResults ?? 5;
 	const maxBytes = options.maxResponseBytes ?? 262_144;
 	const timeoutMs = options.timeoutMs ?? 15_000;
-	if (!Number.isSafeInteger(count) || count < 1 || count > 10 ||
-		!Number.isSafeInteger(maxBytes) || maxBytes < 1024 ||
-		!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("Invalid search limits");
-	return resolveSearchProvider(options.provider).search(query, { apiKey: options.apiKey, maxResults: count, maxResponseBytes: maxBytes, timeoutMs, fetch: options.fetch ?? fetch }, signal);
+	if (
+		!Number.isSafeInteger(count) ||
+		count < 1 ||
+		count > 10 ||
+		!Number.isSafeInteger(maxBytes) ||
+		maxBytes < 1024 ||
+		!Number.isSafeInteger(timeoutMs) ||
+		timeoutMs < 1
+	)
+		throw new Error("Invalid search limits");
+	return resolveSearchProvider(options.provider).search(
+		query,
+		{
+			apiKey: options.apiKey,
+			maxResults: count,
+			maxResponseBytes: maxBytes,
+			timeoutMs,
+			fetch: options.fetch ?? fetch,
+		},
+		signal,
+	);
 }
 
 /** Controlled store for oversized search results (R7.7): long payloads become paged references, not inline JSON. */

@@ -3,11 +3,16 @@ export async function abortable<T>(work: Promise<T>, signal: AbortSignal): Promi
 	signal.throwIfAborted();
 	let abort: (() => void) | undefined;
 	try {
-		return await Promise.race([work, new Promise<never>((_resolve, reject) => {
-			abort = () => reject(signal.reason);
-			signal.addEventListener("abort", abort, { once: true });
-		})]);
-	} finally { if (abort) signal.removeEventListener("abort", abort); }
+		return await Promise.race([
+			work,
+			new Promise<never>((_resolve, reject) => {
+				abort = () => reject(signal.reason);
+				signal.addEventListener("abort", abort, { once: true });
+			}),
+		]);
+	} finally {
+		if (abort) signal.removeEventListener("abort", abort);
+	}
 }
 
 export interface AttemptDeadlines {
@@ -45,7 +50,8 @@ export class AttemptClock {
 	readonly hooks: TransportHooks;
 	constructor(deadlines: AttemptDeadlines, totalMs: number, abort: (phase: DeadlinePhase) => void, now: () => number) {
 		for (const value of [deadlines.connectMs, deadlines.firstResponseMs, deadlines.progressMs]) {
-			if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) throw new Error("Invalid attempt deadlines");
+			if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
+				throw new Error("Invalid attempt deadlines");
 		}
 		if (!Number.isSafeInteger(totalMs) || totalMs <= 0) throw new Error("Invalid total attempt deadline");
 		this.deadlines = { ...deadlines };
@@ -70,7 +76,9 @@ export class AttemptClock {
 		this.arm();
 	}
 	private pending(): { at: number; phase: DeadlinePhase } {
-		const candidates: { at: number; phase: DeadlinePhase }[] = [{ at: this.startedAt + this.totalMs, phase: "total" }];
+		const candidates: { at: number; phase: DeadlinePhase }[] = [
+			{ at: this.startedAt + this.totalMs, phase: "total" },
+		];
 		if (this.deadlines.connectMs !== undefined && this.connectedAt === undefined) {
 			candidates.push({ at: this.startedAt + this.deadlines.connectMs, phase: "connect" });
 		}
@@ -88,10 +96,13 @@ export class AttemptClock {
 		if (this.stopped) return;
 		if (this.timer !== undefined) clearTimeout(this.timer);
 		const next = this.pending();
-		this.timer = setTimeout(() => {
-			this.stopped = true;
-			this.abort(next.phase);
-		}, Math.max(0, next.at - this.now()));
+		this.timer = setTimeout(
+			() => {
+				this.stopped = true;
+				this.abort(next.phase);
+			},
+			Math.max(0, next.at - this.now()),
+		);
 	}
 	stop(): void {
 		this.stopped = true;

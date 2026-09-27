@@ -47,8 +47,12 @@ export interface Activation {
 	tools: ToolBinding[];
 }
 function granted(role: Role, binding: ToolBinding): boolean {
-	return role.grants.some((grant) => grant.toolId === binding.toolId &&
-		grant.accountId === binding.accountId && grant.resourceIds.includes(binding.resourceId));
+	return role.grants.some(
+		(grant) =>
+			grant.toolId === binding.toolId &&
+			grant.accountId === binding.accountId &&
+			grant.resourceIds.includes(binding.resourceId),
+	);
 }
 
 /**
@@ -60,10 +64,16 @@ export class SkillCatalog {
 	private readonly published = new Map<string, RuntimeSkill>();
 	private readonly versions = new Map<string, RuntimeSkill>();
 	archive(raw: RawSkill): string {
-		if (!raw.id || !raw.revision || typeof raw.files["SKILL.md"] !== "string") throw new Error("Missing skill source");
+		if (!raw.id || !raw.revision || typeof raw.files["SKILL.md"] !== "string")
+			throw new Error("Missing skill source");
 		for (const path of Object.keys(raw.files)) {
-			if (path.startsWith("/") || path.includes("\\") || path.includes(":") ||
-				path.split("/").some((part) => part === ".." || part === "." || !part)) throw new Error("Unsafe source path");
+			if (
+				path.startsWith("/") ||
+				path.includes("\\") ||
+				path.includes(":") ||
+				path.split("/").some((part) => part === ".." || part === "." || !part)
+			)
+				throw new Error("Unsafe source path");
 		}
 		const key = JSON.stringify([raw.id, raw.revision]);
 		const existing = this.originals.get(key);
@@ -77,8 +87,14 @@ export class SkillCatalog {
 		return source ? structuredClone(source) : undefined;
 	}
 	publish(skill: RuntimeSkill): void {
-		if (!skill.id || !skill.revision || !skill.instructions.trim() || !skill.sources.length ||
-			!skill.branches.length || new Set(skill.branches.map((branch) => branch.id)).size !== skill.branches.length) {
+		if (
+			!skill.id ||
+			!skill.revision ||
+			!skill.instructions.trim() ||
+			!skill.sources.length ||
+			!skill.branches.length ||
+			new Set(skill.branches.map((branch) => branch.id)).size !== skill.branches.length
+		) {
 			throw new Error("Invalid runtime skill");
 		}
 		for (const source of skill.sources) {
@@ -86,7 +102,8 @@ export class SkillCatalog {
 			if (!raw || digest(raw) !== source.hash) throw new Error("Unverified or changed skill source");
 		}
 		for (const branch of skill.branches) {
-			if (!branch.id || !branch.when.trim() || !branch.instructions.trim()) throw new Error("Missing branch selection rules");
+			if (!branch.id || !branch.when.trim() || !branch.instructions.trim())
+				throw new Error("Missing branch selection rules");
 			if (branch.conflictsWith.some((id) => id === branch.id || !skill.branches.some((other) => other.id === id))) {
 				throw new Error("Invalid branch conflict");
 			}
@@ -103,28 +120,37 @@ export class SkillCatalog {
 		this.published.set(skill.id, structuredClone(skill));
 	}
 	browse(role: Role, category?: string): { id: string; revision: string; title: string; category: string }[] {
-		return [...this.published.values()].filter((skill) => role.skillIds.includes(skill.id) &&
-			(category === undefined || skill.category === category))
+		return [...this.published.values()]
+			.filter((skill) => role.skillIds.includes(skill.id) && (category === undefined || skill.category === category))
 			.map(({ id, revision, title, category: group }) => ({ id, revision, title, category: group }));
 	}
 	branches(role: Role, skillId: string): { id: string; when: string; environment: string[] }[] {
 		if (!role.skillIds.includes(skillId)) throw new Error("Skill not available");
 		const skill = this.published.get(skillId);
 		if (!skill) throw new Error("Skill not available");
-		return skill.branches.filter((branch) => branch.tools.every((tool) => granted(role, tool)))
+		return skill.branches
+			.filter((branch) => branch.tools.every((tool) => granted(role, tool)))
 			.map(({ id, when, environment }) => ({ id, when, environment: [...environment] }));
 	}
 	activate(
-		role: Role, skillId: string, revision: string, branchIds: string[], phase: string,
-		environment: string[], definitions: ToolDefinition[],
+		role: Role,
+		skillId: string,
+		revision: string,
+		branchIds: string[],
+		phase: string,
+		environment: string[],
+		definitions: ToolDefinition[],
 	): Activation {
 		const skill = this.versions.get(JSON.stringify([skillId, revision]));
 		if (!skill || !role.skillIds.includes(skillId)) throw new Error("Skill not available");
-		if (!branchIds.length || new Set(branchIds).size !== branchIds.length) throw new Error("Select distinct skill branches");
+		if (!branchIds.length || new Set(branchIds).size !== branchIds.length)
+			throw new Error("Select distinct skill branches");
 		const branches = branchIds.map((id) => {
 			const branch = skill.branches.find((item) => item.id === id);
-			if (!branch || !branch.environment.every((item) => environment.includes(item))) throw new Error("Branch prerequisites not met");
-			if (branch.conflictsWith.some((other) => branchIds.includes(other))) throw new Error("Conflicting skill branches");
+			if (!branch || !branch.environment.every((item) => environment.includes(item)))
+				throw new Error("Branch prerequisites not met");
+			if (branch.conflictsWith.some((other) => branchIds.includes(other)))
+				throw new Error("Conflicting skill branches");
 			return branch;
 		});
 		const tools = branches.flatMap((branch) => branch.tools.filter((tool) => tool.phase === phase));
@@ -135,7 +161,10 @@ export class SkillCatalog {
 			}
 		}
 		return structuredClone({
-			skillId, skillRevision: revision, branchIds, phase,
+			skillId,
+			skillRevision: revision,
+			branchIds,
+			phase,
 			instructions: [skill.instructions, ...branches.map((branch) => branch.instructions)].join("\n\n"),
 			tools: [...new Map(tools.map((tool) => [digest(tool), tool])).values()],
 		});
@@ -144,12 +173,18 @@ export class SkillCatalog {
 
 /** Call this with the CURRENT role and tool metadata, not a cached permission snapshot. */
 export function authorizeInvocation(
-	activation: Activation, currentRole: Role, currentDefinitions: ToolDefinition[],
+	activation: Activation,
+	currentRole: Role,
+	currentDefinitions: ToolDefinition[],
 	request: { toolId: string; accountId: string; resourceId: string },
 ): ToolBinding {
 	if (!currentRole.skillIds.includes(activation.skillId)) throw new Error("Skill authorization revoked");
-	const binding = activation.tools.find((tool) => tool.toolId === request.toolId &&
-		tool.accountId === request.accountId && tool.resourceId === request.resourceId);
+	const binding = activation.tools.find(
+		(tool) =>
+			tool.toolId === request.toolId &&
+			tool.accountId === request.accountId &&
+			tool.resourceId === request.resourceId,
+	);
 	if (!binding || !granted(currentRole, binding)) throw new Error("Tool call not authorized");
 	if (!currentDefinitions.some((tool) => tool.id === binding.toolId && tool.schemaHash === binding.schemaHash)) {
 		throw new Error("Tool schema changed; reactivate the skill");

@@ -26,23 +26,41 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { FileStateStore } from "./store.ts";
-import { RemoteWorkerServer } from "./remote-worker.ts";
-import { Workspaces, type CheckCommand } from "./workspace.ts";
 import type { WorkerIdentity } from "./coordinator.ts";
+import { RemoteWorkerServer } from "./remote-worker.ts";
+import { FileStateStore } from "./store.ts";
+import { type CheckCommand, Workspaces } from "./workspace.ts";
 
 export interface WorkerServiceConfig {
-	repository: string; worktreeRoot: string; statePath: string; tokenEnv: string;
-	host?: string; port?: number; heartbeatMs?: number;
-	identity: WorkerIdentity; maxConcurrent: number; checks: CheckCommand[];
+	repository: string;
+	worktreeRoot: string;
+	statePath: string;
+	tokenEnv: string;
+	host?: string;
+	port?: number;
+	heartbeatMs?: number;
+	identity: WorkerIdentity;
+	maxConcurrent: number;
+	checks: CheckCommand[];
 	worker: { command: string; args: string[]; env?: Record<string, string> };
 }
 export function readWorkerServiceConfig(path: string): WorkerServiceConfig {
 	if (!path) throw new Error("Worker service config path required");
 	const config = JSON.parse(readFileSync(resolve(path), "utf8")) as Partial<WorkerServiceConfig>;
-	if (!config.repository || !config.worktreeRoot || !config.statePath || !config.tokenEnv ||
-		!config.identity?.id || !Array.isArray(config.checks) || typeof config.maxConcurrent !== "number" || !Number.isSafeInteger(config.maxConcurrent) || config.maxConcurrent < 1 ||
-		!config.worker?.command || !Array.isArray(config.worker.args)) throw new Error("Invalid worker service configuration");
+	if (
+		!config.repository ||
+		!config.worktreeRoot ||
+		!config.statePath ||
+		!config.tokenEnv ||
+		!config.identity?.id ||
+		!Array.isArray(config.checks) ||
+		typeof config.maxConcurrent !== "number" ||
+		!Number.isSafeInteger(config.maxConcurrent) ||
+		config.maxConcurrent < 1 ||
+		!config.worker?.command ||
+		!Array.isArray(config.worker.args)
+	)
+		throw new Error("Invalid worker service configuration");
 	return config as WorkerServiceConfig;
 }
 /**
@@ -50,22 +68,46 @@ export function readWorkerServiceConfig(path: string): WorkerServiceConfig {
  * capacity, job counts, uptime) each heartbeatMs; the default prints one JSON line.
  * Resolves when the abort signal fires and shutdown has converged.
  */
-export async function runWorkerService(config: WorkerServiceConfig, signal: AbortSignal, onHeartbeat?: (status: Record<string, unknown>) => void): Promise<void> {
+export async function runWorkerService(
+	config: WorkerServiceConfig,
+	signal: AbortSignal,
+	onHeartbeat?: (status: Record<string, unknown>) => void,
+): Promise<void> {
 	const token = process.env[config.tokenEnv];
 	if (!token || token.length < 24) throw new Error(`Missing strong bearer token in ${config.tokenEnv}`);
-	const announce = onHeartbeat ?? ((status): void => { process.stdout.write(`${JSON.stringify(status)}\n`); });
+	const announce =
+		onHeartbeat ??
+		((status): void => {
+			process.stdout.write(`${JSON.stringify(status)}\n`);
+		});
 	const server = new RemoteWorkerServer(new FileStateStore(resolve(config.statePath), { jobs: [] }), {
-		token, identity: config.identity, maxConcurrent: config.maxConcurrent, checks: config.checks,
+		token,
+		identity: config.identity,
+		maxConcurrent: config.maxConcurrent,
+		checks: config.checks,
 		workspaces: new Workspaces(config.repository, config.worktreeRoot),
-		process: (workspace) => ({ command: config.worker.command, args: config.worker.args, cwd: workspace.path, env: config.worker.env }),
+		process: (workspace) => ({
+			command: config.worker.command,
+			args: config.worker.args,
+			cwd: workspace.path,
+			env: config.worker.env,
+		}),
 	});
 	const url = await server.listen(config.port ?? 0, config.host ?? "127.0.0.1");
 	announce({ event: "listening", url, ...(await server.status()) });
 	const interval = Math.max(1000, config.heartbeatMs ?? 30_000);
-	const timer = setInterval(() => { void server.status().then((status) => announce({ event: "heartbeat", url, ...status })).catch(() => {}); }, interval);
+	const timer = setInterval(() => {
+		void server
+			.status()
+			.then((status) => announce({ event: "heartbeat", url, ...status }))
+			.catch(() => {});
+	}, interval);
 	timer.unref();
 	await new Promise<void>((resolveWait) => {
-		if (signal.aborted) { resolveWait(); return; }
+		if (signal.aborted) {
+			resolveWait();
+			return;
+		}
 		signal.addEventListener("abort", () => resolveWait(), { once: true });
 	});
 	clearInterval(timer);

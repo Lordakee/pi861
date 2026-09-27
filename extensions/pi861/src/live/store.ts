@@ -1,5 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	fsyncSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { MemoryBackend, MemoryItem, MemoryReceipt, MemoryWrite } from "../memory.ts";
@@ -22,17 +32,20 @@ export class FileStateStore<T> implements StateStore<T> {
 		mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
 	}
 	async read(): Promise<T> {
-		return existsSync(this.path) ? JSON.parse(readFileSync(this.path, "utf8")) as T : structuredClone(this.initial);
+		return existsSync(this.path) ? (JSON.parse(readFileSync(this.path, "utf8")) as T) : structuredClone(this.initial);
 	}
 	async update<R>(change: (state: T) => R | Promise<R>): Promise<R> {
 		const lock = `${this.path}.lock`;
 		const start = Date.now();
 		let acquired = false;
 		while (!acquired) {
-			try { mkdirSync(lock, { mode: 0o700 }); acquired = true; }
-			catch (error) {
+			try {
+				mkdirSync(lock, { mode: 0o700 });
+				acquired = true;
+			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-				if (Date.now() - start >= this.timeoutMs) throw new Error("State lock unavailable; inspect abandoned owner before recovery");
+				if (Date.now() - start >= this.timeoutMs)
+					throw new Error("State lock unavailable; inspect abandoned owner before recovery");
 				await sleep(10);
 			}
 		}
@@ -42,12 +55,21 @@ export class FileStateStore<T> implements StateStore<T> {
 			const result = await change(state);
 			const bytes = JSON.stringify(state);
 			const fd = openSync(temporary, "wx", 0o600);
-			try { writeFileSync(fd, bytes, "utf8"); fsyncSync(fd); } finally { closeSync(fd); }
+			try {
+				writeFileSync(fd, bytes, "utf8");
+				fsyncSync(fd);
+			} finally {
+				closeSync(fd);
+			}
 			renameSync(temporary, this.path);
 			// POSIX requires syncing the directory to durably publish the rename.
 			if (process.platform !== "win32") {
 				const directory = openSync(dirname(this.path), "r");
-				try { fsyncSync(directory); } finally { closeSync(directory); }
+				try {
+					fsyncSync(directory);
+				} finally {
+					closeSync(directory);
+				}
 			}
 			return structuredClone(result);
 		} finally {
@@ -65,7 +87,10 @@ export class PostgresStateStore<T> implements StateStore<T> {
 	private readonly initial: T;
 	constructor(pool: SqlPool, tenant: string, key: string, initial: T) {
 		if (!tenant || !key) throw new Error("Stable state identity required");
-		this.pool = pool; this.tenant = tenant; this.key = key; this.initial = structuredClone(initial);
+		this.pool = pool;
+		this.tenant = tenant;
+		this.key = key;
+		this.initial = structuredClone(initial);
 	}
 	async read(): Promise<T> {
 		return this.transaction(undefined);
@@ -79,28 +104,73 @@ export class PostgresStateStore<T> implements StateStore<T> {
 		const connection = await this.pool.connect();
 		try {
 			await connection.query("BEGIN");
-			await connection.query("SELECT set_config('pi861.tenant_id',$1,true), set_config('lock_timeout','5000',true), set_config('statement_timeout','10000',true)", [this.tenant]);
-			await connection.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [JSON.stringify([this.tenant, this.key])]);
-			const selected = await connection.query("SELECT body FROM pi861_runtime_state WHERE tenant_id=$1 AND state_key=$2 FOR UPDATE", [this.tenant, this.key]);
+			await connection.query(
+				"SELECT set_config('pi861.tenant_id',$1,true), set_config('lock_timeout','5000',true), set_config('statement_timeout','10000',true)",
+				[this.tenant],
+			);
+			await connection.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
+				JSON.stringify([this.tenant, this.key]),
+			]);
+			const selected = await connection.query(
+				"SELECT body FROM pi861_runtime_state WHERE tenant_id=$1 AND state_key=$2 FOR UPDATE",
+				[this.tenant, this.key],
+			);
 			const state = selected.rows[0] ? structuredClone(selected.rows[0].body as T) : structuredClone(this.initial);
 			const result = change ? await change(state) : state;
-			if (change) await connection.query("INSERT INTO pi861_runtime_state(tenant_id,state_key,body) VALUES($1,$2,$3::jsonb) ON CONFLICT(tenant_id,state_key) DO UPDATE SET body=EXCLUDED.body, updated_at=clock_timestamp()", [this.tenant, this.key, JSON.stringify(state)]);
+			if (change)
+				await connection.query(
+					"INSERT INTO pi861_runtime_state(tenant_id,state_key,body) VALUES($1,$2,$3::jsonb) ON CONFLICT(tenant_id,state_key) DO UPDATE SET body=EXCLUDED.body, updated_at=clock_timestamp()",
+					[this.tenant, this.key, JSON.stringify(state)],
+				);
 			await connection.query("COMMIT");
 			return structuredClone(result);
-		} catch (error) { await connection.query("ROLLBACK").catch(() => {}); throw error; }
-		finally { connection.release(); }
+		} catch (error) {
+			await connection.query("ROLLBACK").catch(() => {});
+			throw error;
+		} finally {
+			connection.release();
+		}
 	}
 }
 
-export interface DeadLetterState { reason: string; at: number }
+export interface DeadLetterState {
+	reason: string;
+	at: number;
+}
 export type PendingMemoryOperation =
-	| { kind: "put"; queuedAt: number; reason: string; critical: boolean; input: MemoryWrite; failures?: number; dead?: DeadLetterState }
-	| { kind: "withdraw"; queuedAt: number; reason: string; critical: boolean; requestId: string; scope: string; id: string; expectedRevision: number; failures?: number; dead?: DeadLetterState };
+	| {
+			kind: "put";
+			queuedAt: number;
+			reason: string;
+			critical: boolean;
+			input: MemoryWrite;
+			failures?: number;
+			dead?: DeadLetterState;
+	  }
+	| {
+			kind: "withdraw";
+			queuedAt: number;
+			reason: string;
+			critical: boolean;
+			requestId: string;
+			scope: string;
+			id: string;
+			expectedRevision: number;
+			failures?: number;
+			dead?: DeadLetterState;
+	  };
 
 /** A terminally failed queue entry parked for a human decision; visible through pendingReport() and removable with abandonPending(). */
 export interface PendingDeadLetter {
-	requestId: string; kind: "put" | "withdraw"; scope: string; id: string;
-	critical: boolean; queuedAt: number; failures: number; reason: string; deadAt: number;
+	requestId: string;
+	kind: "put" | "withdraw";
+	scope: string;
+	id: string;
+	critical: boolean;
+	queuedAt: number;
+	failures: number;
+	reason: string;
+	deadAt: number;
 }
 
 /**
@@ -114,7 +184,11 @@ export class ResilientBackend implements MemoryBackend {
 	private readonly store: StateStore<{ pending: PendingMemoryOperation[] }>;
 	private readonly deadLetterAfter: number;
 	private flushChain: Promise<unknown> = Promise.resolve();
-	constructor(backend: MemoryBackend, store: StateStore<{ pending: PendingMemoryOperation[] }>, options: { deadLetterAfter?: number } = {}) {
+	constructor(
+		backend: MemoryBackend,
+		store: StateStore<{ pending: PendingMemoryOperation[] }>,
+		options: { deadLetterAfter?: number } = {},
+	) {
 		this.backend = backend;
 		this.store = store;
 		this.deadLetterAfter = options.deadLetterAfter ?? 3;
@@ -123,7 +197,9 @@ export class ResilientBackend implements MemoryBackend {
 		}
 	}
 	private queue(operation: PendingMemoryOperation): Promise<void> {
-		return this.store.update((state) => { state.pending.push(operation); });
+		return this.store.update((state) => {
+			state.pending.push(operation);
+		});
 	}
 	async put(input: MemoryWrite, options: { critical?: boolean } = {}): Promise<MemoryReceipt> {
 		try {
@@ -131,24 +207,53 @@ export class ResilientBackend implements MemoryBackend {
 			void this.flush().catch(() => {}); // opportunistic drain, never blocks the caller
 			return receipt;
 		} catch (error) {
-			await this.queue({ kind: "put", queuedAt: Date.now(), reason: reasonOf(error), critical: options.critical === true,
-				input: structuredClone(input) });
-			return { requestId: input.requestId, state: "pending", id: input.item.id, scope: input.item.scope, revision: input.expectedRevision ?? 0 };
+			await this.queue({
+				kind: "put",
+				queuedAt: Date.now(),
+				reason: reasonOf(error),
+				critical: options.critical === true,
+				input: structuredClone(input),
+			});
+			return {
+				requestId: input.requestId,
+				state: "pending",
+				id: input.item.id,
+				scope: input.item.scope,
+				revision: input.expectedRevision ?? 0,
+			};
 		}
 	}
-	async withdraw(requestId: string, scope: string, id: string, expectedRevision: number, options: { critical?: boolean } = {}): Promise<MemoryReceipt> {
+	async withdraw(
+		requestId: string,
+		scope: string,
+		id: string,
+		expectedRevision: number,
+		options: { critical?: boolean } = {},
+	): Promise<MemoryReceipt> {
 		try {
 			const receipt = await this.backend.withdraw(requestId, scope, id, expectedRevision);
 			void this.flush().catch(() => {});
 			return receipt;
 		} catch (error) {
-			await this.queue({ kind: "withdraw", queuedAt: Date.now(), reason: reasonOf(error), critical: options.critical === true,
-				requestId, scope, id, expectedRevision });
+			await this.queue({
+				kind: "withdraw",
+				queuedAt: Date.now(),
+				reason: reasonOf(error),
+				critical: options.critical === true,
+				requestId,
+				scope,
+				id,
+				expectedRevision,
+			});
 			return { requestId, state: "pending", id, scope, revision: expectedRevision };
 		}
 	}
-	async get(scope: string, id: string): Promise<MemoryItem | undefined> { return this.backend.get(scope, id); }
-	async search(query: string, limit?: number): Promise<MemoryItem[]> { return this.backend.search(query, limit); }
+	async get(scope: string, id: string): Promise<MemoryItem | undefined> {
+		return this.backend.get(scope, id);
+	}
+	async search(query: string, limit?: number): Promise<MemoryItem[]> {
+		return this.backend.search(query, limit);
+	}
 	async list(scope: string, afterId = "", limit = 50): Promise<{ items: MemoryItem[]; nextId?: string }> {
 		if (!this.backend.list) throw new Error("Buffered backend does not support listing");
 		return this.backend.list(scope, afterId, limit);
@@ -161,7 +266,10 @@ export class ResilientBackend implements MemoryBackend {
 	 * it) instead of blocking every later entry.
 	 */
 	async flush(): Promise<{ committed: number; remaining: number }> {
-		const run = this.flushChain.then(() => this.flushOnce(), () => this.flushOnce());
+		const run = this.flushChain.then(
+			() => this.flushOnce(),
+			() => this.flushOnce(),
+		);
 		this.flushChain = run.catch(() => {});
 		return run;
 	}
@@ -198,20 +306,36 @@ export class ResilientBackend implements MemoryBackend {
 		});
 		return dead;
 	}
-	async pendingReport(): Promise<{ count: number; critical: number; oldestQueuedAt: number | undefined; reasons: string[]; dead: PendingDeadLetter[] }> {
+	async pendingReport(): Promise<{
+		count: number;
+		critical: number;
+		oldestQueuedAt: number | undefined;
+		reasons: string[];
+		dead: PendingDeadLetter[];
+	}> {
 		const pending = (await this.store.read()).pending;
 		return {
 			count: pending.length,
 			critical: pending.filter((entry) => entry.critical).length,
 			oldestQueuedAt: pending[0]?.queuedAt,
 			reasons: [...new Set(pending.map((entry) => entry.reason))],
-			dead: pending.flatMap((entry) => entry.dead ? [{
-				requestId: requestIdOf(entry), kind: entry.kind,
-				scope: entry.kind === "put" ? entry.input.item.scope : entry.scope,
-				id: entry.kind === "put" ? entry.input.item.id : entry.id,
-				critical: entry.critical, queuedAt: entry.queuedAt, failures: entry.failures ?? 0,
-				reason: entry.dead.reason, deadAt: entry.dead.at,
-			}] : []),
+			dead: pending.flatMap((entry) =>
+				entry.dead
+					? [
+							{
+								requestId: requestIdOf(entry),
+								kind: entry.kind,
+								scope: entry.kind === "put" ? entry.input.item.scope : entry.scope,
+								id: entry.kind === "put" ? entry.input.item.id : entry.id,
+								critical: entry.critical,
+								queuedAt: entry.queuedAt,
+								failures: entry.failures ?? 0,
+								reason: entry.dead.reason,
+								deadAt: entry.dead.at,
+							},
+						]
+					: [],
+			),
 		};
 	}
 	/** Manual dead-letter entry: drops a terminally failed operation after human review. Live entries stay queued. */
@@ -228,7 +352,9 @@ export class ResilientBackend implements MemoryBackend {
 	async assertCommitted(boundary: string): Promise<void> {
 		const report = await this.pendingReport();
 		if (report.critical > 0) {
-			throw new Error(`Checkpoint "${boundary}" paused: ${report.critical} critical memory record(s) still uncommitted (first queued ${report.oldestQueuedAt})`);
+			throw new Error(
+				`Checkpoint "${boundary}" paused: ${report.critical} critical memory record(s) still uncommitted (first queued ${report.oldestQueuedAt})`,
+			);
 		}
 	}
 }

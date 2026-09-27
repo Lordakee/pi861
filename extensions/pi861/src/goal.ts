@@ -25,15 +25,27 @@ export interface GoalState {
 export function readGoal(value: unknown): GoalState | undefined {
 	if (!value || typeof value !== "object") return undefined;
 	const goal = value as Partial<GoalState>;
-	if (typeof goal.id !== "string" || !goal.id || typeof goal.objective !== "string" || !goal.objective.trim() ||
-		!Number.isSafeInteger(goal.revision) || (goal.revision ?? 0) < 1 ||
+	if (
+		typeof goal.id !== "string" ||
+		!goal.id ||
+		typeof goal.objective !== "string" ||
+		!goal.objective.trim() ||
+		!Number.isSafeInteger(goal.revision) ||
+		(goal.revision ?? 0) < 1 ||
 		!["active", "paused", "review", "completed", "cancelled"].includes(goal.status ?? "") ||
-		!Number.isSafeInteger(goal.maxRuns) || (goal.maxRuns ?? 0) < 1 ||
-		!Number.isSafeInteger(goal.usedRuns) || (goal.usedRuns ?? -1) < 0 ||
-		!Number.isSafeInteger(goal.noProgressRuns) || (goal.noProgressRuns ?? -1) < 0 ||
-		typeof goal.progress !== "string" || typeof goal.nextAction !== "string" ||
-		!Array.isArray(goal.evidence) || !goal.evidence.every((item) => typeof item === "string") ||
-		(goal.runToken !== undefined && typeof goal.runToken !== "string")) return undefined;
+		!Number.isSafeInteger(goal.maxRuns) ||
+		(goal.maxRuns ?? 0) < 1 ||
+		!Number.isSafeInteger(goal.usedRuns) ||
+		(goal.usedRuns ?? -1) < 0 ||
+		!Number.isSafeInteger(goal.noProgressRuns) ||
+		(goal.noProgressRuns ?? -1) < 0 ||
+		typeof goal.progress !== "string" ||
+		typeof goal.nextAction !== "string" ||
+		!Array.isArray(goal.evidence) ||
+		!goal.evidence.every((item) => typeof item === "string") ||
+		(goal.runToken !== undefined && typeof goal.runToken !== "string")
+	)
+		return undefined;
 	return structuredClone(goal as GoalState);
 }
 
@@ -41,8 +53,12 @@ export function readGoal(value: unknown): GoalState | undefined {
 export class GoalController {
 	private goal: GoalState | undefined;
 	private readonly persist: (state: GoalState | undefined) => void;
-	constructor(persist: (state: GoalState | undefined) => void) { this.persist = persist; }
-	get state(): GoalState | undefined { return this.goal ? structuredClone(this.goal) : undefined; }
+	constructor(persist: (state: GoalState | undefined) => void) {
+		this.persist = persist;
+	}
+	get state(): GoalState | undefined {
+		return this.goal ? structuredClone(this.goal) : undefined;
+	}
 	private save(next: GoalState | undefined): void {
 		this.persist(next ? structuredClone(next) : undefined);
 		this.goal = next;
@@ -64,13 +80,21 @@ export class GoalController {
 		this.goal = restored;
 	}
 	create(objective: string, maxRuns = 20): GoalState {
-		if (this.goal && !["completed", "cancelled"].includes(this.goal.status)) throw new Error("Pause/clear the current goal first");
+		if (this.goal && !["completed", "cancelled"].includes(this.goal.status))
+			throw new Error("Pause/clear the current goal first");
 		if (!objective.trim() || objective.length > 16_000 || !Number.isSafeInteger(maxRuns) || maxRuns < 1) {
 			throw new Error("Invalid goal or run budget");
 		}
 		this.save({
-			id: randomUUID(), revision: 1, objective: objective.trim(), status: "active",
-			maxRuns, usedRuns: 0, noProgressRuns: 0, progress: "", nextAction: "Inspect the project and establish acceptance evidence.",
+			id: randomUUID(),
+			revision: 1,
+			objective: objective.trim(),
+			status: "active",
+			maxRuns,
+			usedRuns: 0,
+			noProgressRuns: 0,
+			progress: "",
+			nextAction: "Inspect the project and establish acceptance evidence.",
 			evidence: [],
 		});
 		return this.state as GoalState;
@@ -107,9 +131,14 @@ export class GoalController {
 	report(token: string, report: GoalReport): void {
 		const next = this.required();
 		if (next.status !== "active" || next.runToken !== token) throw new Error("Stale goal run");
-		if (!report.progress.trim() || report.progress.length > 4000 ||
-			(report.nextAction?.length ?? 0) > 4000 || report.evidence.length > 50 ||
-			report.evidence.some((item) => !item.trim() || item.length > 2000)) throw new Error("Invalid progress report");
+		if (
+			!report.progress.trim() ||
+			report.progress.length > 4000 ||
+			(report.nextAction?.length ?? 0) > 4000 ||
+			report.evidence.length > 50 ||
+			report.evidence.some((item) => !item.trim() || item.length > 2000)
+		)
+			throw new Error("Invalid progress report");
 		if (report.readyForReview && report.evidence.length === 0) throw new Error("Review requires evidence");
 		next.report = structuredClone(report);
 		next.revision++;
@@ -125,8 +154,9 @@ export class GoalController {
 			next.reason = outcome === "aborted" ? "Execution cancelled" : "Execution failed; inspect before resuming";
 		} else {
 			const report = next.report;
-			const changed = report && (report.progress !== next.progress ||
-				report.evidence.some((item) => !next.evidence.includes(item)));
+			const changed =
+				report &&
+				(report.progress !== next.progress || report.evidence.some((item) => !next.evidence.includes(item)));
 			next.noProgressRuns = changed ? 0 : next.noProgressRuns + 1;
 			if (report) {
 				next.progress = report.progress;

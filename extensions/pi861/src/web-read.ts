@@ -2,10 +2,10 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP, type LookupFunction } from "node:net";
-import { Readable, Writable, type Transform } from "node:stream";
+import { Readable, type Transform, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
-import { createBrotliDecompress, createDeflate, createGunzip, createInflate } from "node:zlib";
+import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 
 /**
  * Bounded web reading (R7.6). External pages are fetched only after every hop passes
@@ -23,7 +23,10 @@ export interface WebEndpointPolicy {
 	/** Approved public hosts; entries are exact names or "*.suffix" patterns. Every hop is DNS-guarded. */
 	publicHosts: string[];
 }
-export interface ResolvedAddress { address: string; family: number; }
+export interface ResolvedAddress {
+	address: string;
+	family: number;
+}
 export type LookupFn = (hostname: string) => Promise<ResolvedAddress[]>;
 export interface TransportInit {
 	headers: Record<string, string>;
@@ -63,7 +66,11 @@ export interface WebPageResult {
 	policy: { kind: "public" } | { kind: "internal-endpoint"; endpoint: string };
 	untrusted: true;
 }
-export interface AuthorizedTarget { url: URL; kind: "public" | "internal"; endpoint?: string; }
+export interface AuthorizedTarget {
+	url: URL;
+	kind: "public" | "internal";
+	endpoint?: string;
+}
 
 // --- address guard -----------------------------------------------------------
 
@@ -86,7 +93,7 @@ function parseIpv6(address: string): number[] | undefined {
 	const sections = input.split("::");
 	if (sections.length > 2) return undefined;
 	const headText = sections[0] ?? "";
-	const tailText = sections.length === 2 ? sections[1] ?? "" : "";
+	const tailText = sections.length === 2 ? (sections[1] ?? "") : "";
 	const parseParts = (text: string, allowTrailingIpv4: boolean): number[] | undefined => {
 		if (text === "") return [];
 		const parts = text.split(":");
@@ -120,17 +127,20 @@ function parseIpv6(address: string): number[] | undefined {
 function ipv4Blocked(octets: number[]): boolean {
 	const value = (((octets[0] ?? 0) * 256 + (octets[1] ?? 0)) * 256 + (octets[2] ?? 0)) * 256 + (octets[3] ?? 0);
 	const ranges: Array<[number, number]> = [
-		[0x00000000, 0x00FFFFFF], // "this" network
-		[0x0A000000, 0x0AFFFFFF], // private
-		[0x64400000, 0x647FFFFF], // CGNAT
-		[0x7F000000, 0x7FFFFFFF], // loopback
-		[0xA9FE0000, 0xA9FEFFFF], // link-local incl. 169.254.169.254 metadata
-		[0xAC100000, 0xAC1FFFFF], // private
-		[0xC0000000, 0xC00000FF], [0xC0000200, 0xC00002FF], [0xC0586300, 0xC05863FF], // reserved / TEST-NET-1 / 6to4 relay
-		[0xC0A80000, 0xC0A8FFFF], // private
-		[0xC6120000, 0xC613FFFF], // benchmarking
-		[0xC6336400, 0xC63364FF], [0xCB007100, 0xCB0071FF], // TEST-NET-2/3
-		[0xE0000000, 0xFFFFFFFF], // multicast, reserved, broadcast
+		[0x00000000, 0x00ffffff], // "this" network
+		[0x0a000000, 0x0affffff], // private
+		[0x64400000, 0x647fffff], // CGNAT
+		[0x7f000000, 0x7fffffff], // loopback
+		[0xa9fe0000, 0xa9feffff], // link-local incl. 169.254.169.254 metadata
+		[0xac100000, 0xac1fffff], // private
+		[0xc0000000, 0xc00000ff],
+		[0xc0000200, 0xc00002ff],
+		[0xc0586300, 0xc05863ff], // reserved / TEST-NET-1 / 6to4 relay
+		[0xc0a80000, 0xc0a8ffff], // private
+		[0xc6120000, 0xc613ffff], // benchmarking
+		[0xc6336400, 0xc63364ff],
+		[0xcb007100, 0xcb0071ff], // TEST-NET-2/3
+		[0xe0000000, 0xffffffff], // multicast, reserved, broadcast
 	];
 	return ranges.some(([start, end]) => value >= start && value <= end);
 }
@@ -143,23 +153,30 @@ export function isBlockedAddress(address: string): boolean {
 	if (!v6) return true;
 	const [g0, g1, g2, g3, g4, g5, g6, g7] = v6;
 	if ((g0 ?? 0) === 0 && (g1 ?? 0) === 0 && (g2 ?? 0) === 0 && (g3 ?? 0) === 0 && (g4 ?? 0) === 0 && (g5 ?? 0) === 0) {
-		return ipv4Blocked([((g6 ?? 0) >> 8) & 0xFF, (g6 ?? 0) & 0xFF, ((g7 ?? 0) >> 8) & 0xFF, (g7 ?? 0) & 0xFF]); // ::, ::1 and IPv4-compatible/translated forms
+		return ipv4Blocked([((g6 ?? 0) >> 8) & 0xff, (g6 ?? 0) & 0xff, ((g7 ?? 0) >> 8) & 0xff, (g7 ?? 0) & 0xff]); // ::, ::1 and IPv4-compatible/translated forms
 	}
-	if ((g0 ?? 0) === 0 && (g1 ?? 0) === 0 && (g2 ?? 0) === 0 && (g3 ?? 0) === 0 && (g4 ?? 0) === 0 && (g5 ?? 0) === 0xFFFF) {
-		return ipv4Blocked([((g6 ?? 0) >> 8) & 0xFF, (g6 ?? 0) & 0xFF, ((g7 ?? 0) >> 8) & 0xFF, (g7 ?? 0) & 0xFF]); // IPv4-mapped IPv6
+	if (
+		(g0 ?? 0) === 0 &&
+		(g1 ?? 0) === 0 &&
+		(g2 ?? 0) === 0 &&
+		(g3 ?? 0) === 0 &&
+		(g4 ?? 0) === 0 &&
+		(g5 ?? 0) === 0xffff
+	) {
+		return ipv4Blocked([((g6 ?? 0) >> 8) & 0xff, (g6 ?? 0) & 0xff, ((g7 ?? 0) >> 8) & 0xff, (g7 ?? 0) & 0xff]); // IPv4-mapped IPv6
 	}
-	if ((g0 ?? 0) === 0x64 && (g1 ?? 0) === 0xFF9B) {
-		return ipv4Blocked([((g6 ?? 0) >> 8) & 0xFF, (g6 ?? 0) & 0xFF, ((g7 ?? 0) >> 8) & 0xFF, (g7 ?? 0) & 0xFF]); // NAT64
+	if ((g0 ?? 0) === 0x64 && (g1 ?? 0) === 0xff9b) {
+		return ipv4Blocked([((g6 ?? 0) >> 8) & 0xff, (g6 ?? 0) & 0xff, ((g7 ?? 0) >> 8) & 0xff, (g7 ?? 0) & 0xff]); // NAT64
 	}
 	if ((g0 ?? 0) === 0x2002) {
-		return ipv4Blocked([(g1 ?? 0) >> 8, (g1 ?? 0) & 0xFF, (g2 ?? 0) >> 8, (g2 ?? 0) & 0xFF]); // 6to4
+		return ipv4Blocked([(g1 ?? 0) >> 8, (g1 ?? 0) & 0xff, (g2 ?? 0) >> 8, (g2 ?? 0) & 0xff]); // 6to4
 	}
 	if ((g0 ?? 0) === 0x0100 && v6.slice(1).every((group) => group === 0)) return true; // discard-only
-	if ((g0 ?? 0) === 0x2001 && (g1 ?? 0) === 0x0DB8) return true; // documentation
+	if ((g0 ?? 0) === 0x2001 && (g1 ?? 0) === 0x0db8) return true; // documentation
 	if ((g0 ?? 0) === 0x2001 && (g1 ?? 0) === 0x0000) return true; // Teredo (2001::/32)
-	if (((g0 ?? 0) & 0xFE00) === 0xFC00) return true; // unique local
-	if (((g0 ?? 0) & 0xFFC0) === 0xFE80) return true; // link-local
-	if (((g0 ?? 0) & 0xFF00) === 0xFF00) return true; // multicast
+	if (((g0 ?? 0) & 0xfe00) === 0xfc00) return true; // unique local
+	if (((g0 ?? 0) & 0xffc0) === 0xfe80) return true; // link-local
+	if (((g0 ?? 0) & 0xff00) === 0xff00) return true; // multicast
 	return false;
 }
 
@@ -186,24 +203,38 @@ export function hostMatches(hostname: string, pattern: string): boolean {
 /** Scheme/host/port approval. Internal endpoints match exactly; public hosts allow standard ports only. */
 export function authorizeTarget(rawUrl: string | URL, policy: WebEndpointPolicy): AuthorizedTarget {
 	let url: URL;
-	try { url = rawUrl instanceof URL ? rawUrl : new URL(rawUrl); }
-	catch { throw new Error("Invalid URL for web reading"); }
-	if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error(`Web reading refuses scheme "${url.protocol}"`);
+	try {
+		url = rawUrl instanceof URL ? rawUrl : new URL(rawUrl);
+	} catch {
+		throw new Error("Invalid URL for web reading");
+	}
+	if (url.protocol !== "https:" && url.protocol !== "http:")
+		throw new Error(`Web reading refuses scheme "${url.protocol}"`);
 	if (url.username || url.password) throw new Error("Web reading refuses URLs with embedded credentials");
 	const host = normalizeHost(url.hostname);
 	if (!host) throw new Error("Web reading requires a host");
 	for (const endpoint of policy.internal) {
 		let approved: URL;
-		try { approved = new URL(endpoint); }
-		catch { throw new Error(`Invalid approved internal endpoint "${endpoint}"`); }
-		if (approved.protocol === url.protocol && normalizeHost(approved.hostname) === host && effectivePort(approved) === effectivePort(url)) {
+		try {
+			approved = new URL(endpoint);
+		} catch {
+			throw new Error(`Invalid approved internal endpoint "${endpoint}"`);
+		}
+		if (
+			approved.protocol === url.protocol &&
+			normalizeHost(approved.hostname) === host &&
+			effectivePort(approved) === effectivePort(url)
+		) {
 			return { url, kind: "internal", endpoint };
 		}
 	}
 	if (policy.publicHosts.some((pattern) => hostMatches(host, pattern))) {
 		const port = effectivePort(url);
 		const expected = url.protocol === "https:" ? 443 : 80;
-		if (port !== expected) throw new Error(`Web reading refuses ${url.protocol}// port ${url.port || "(default)"}; only the protocol default is allowed`);
+		if (port !== expected)
+			throw new Error(
+				`Web reading refuses ${url.protocol}// port ${url.port || "(default)"}; only the protocol default is allowed`,
+			);
 		return { url, kind: "public" };
 	}
 	throw new Error(`Host "${host}" is not approved for web reading`);
@@ -219,7 +250,10 @@ export const defaultLookup: LookupFn = async (hostname) => {
 
 // --- default transport -------------------------------------------------------
 
-function pinnedLookup(addresses: ResolvedAddress[], onConnect: (info: { host: string; address: string }) => void): LookupFunction {
+function pinnedLookup(
+	addresses: ResolvedAddress[],
+	onConnect: (info: { host: string; address: string }) => void,
+): LookupFunction {
 	return (hostname, options, callback) => {
 		const chosen = addresses[0];
 		if (!chosen) {
@@ -236,28 +270,33 @@ function pinnedLookup(addresses: ResolvedAddress[], onConnect: (info: { host: st
 }
 
 /** Default transport over node:http/https. Connections are pinned to pre-validated addresses. */
-export const nodeTransport: TransportFetch = (url, init) => new Promise<WebResponse>((resolve, reject) => {
-	const send = url.protocol === "https:" ? httpsRequest : httpRequest;
-	const request = send(url, {
-		method: "GET",
-		headers: init.headers,
-		signal: init.signal,
-		lookup: init.pinnedAddresses ? pinnedLookup(init.pinnedAddresses, init.onConnect ?? (() => {})) : undefined,
-	}, (response) => {
-		resolve({
-			status: response.statusCode ?? 0,
-			headers: {
-				get: (name: string): string | null => {
-					const value = response.headers[name.toLowerCase()];
-					return Array.isArray(value) ? value[0] ?? null : value ?? null;
-				},
+export const nodeTransport: TransportFetch = (url, init) =>
+	new Promise<WebResponse>((resolve, reject) => {
+		const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+		const request = send(
+			url,
+			{
+				method: "GET",
+				headers: init.headers,
+				signal: init.signal,
+				lookup: init.pinnedAddresses ? pinnedLookup(init.pinnedAddresses, init.onConnect ?? (() => {})) : undefined,
 			},
-			body: response,
-		});
+			(response) => {
+				resolve({
+					status: response.statusCode ?? 0,
+					headers: {
+						get: (name: string): string | null => {
+							const value = response.headers[name.toLowerCase()];
+							return Array.isArray(value) ? (value[0] ?? null) : (value ?? null);
+						},
+					},
+					body: response,
+				});
+			},
+		);
+		request.on("error", reject);
+		request.end();
 	});
-	request.on("error", reject);
-	request.end();
-});
 
 // --- bounded reading and extraction ------------------------------------------
 
@@ -270,19 +309,34 @@ async function drainBody(body: WebResponse["body"]): Promise<void> {
 
 function decoderFor(encoding: string): Transform | null {
 	switch (encoding) {
-		case "": case "identity": return null;
-		case "gzip": case "x-gzip": return createGunzip();
-		case "deflate": return createInflate();
-		case "br": return createBrotliDecompress();
-		default: throw new Error(`Web reading cannot decode content-encoding "${encoding}"`);
+		case "":
+		case "identity":
+			return null;
+		case "gzip":
+		case "x-gzip":
+			return createGunzip();
+		case "deflate":
+			return createInflate();
+		case "br":
+			return createBrotliDecompress();
+		default:
+			throw new Error(`Web reading cannot decode content-encoding "${encoding}"`);
 	}
 }
 
-async function readBounded(body: WebResponse["body"], decoder: Transform | null, maxBytes: number, signal: AbortSignal): Promise<{ bytes: number; text: string; truncated: boolean }> {
+async function readBounded(
+	body: WebResponse["body"],
+	decoder: Transform | null,
+	maxBytes: number,
+	signal: AbortSignal,
+): Promise<{ bytes: number; text: string; truncated: boolean }> {
 	if (!body) return { bytes: 0, text: "", truncated: false };
-	const source = body instanceof ReadableStream
-		? Readable.fromWeb(body as unknown as NodeWebReadableStream)
-		: body instanceof Readable ? body : Readable.from([]);
+	const source =
+		body instanceof ReadableStream
+			? Readable.fromWeb(body as unknown as NodeWebReadableStream)
+			: body instanceof Readable
+				? body
+				: Readable.from([]);
 	const collected: Buffer[] = [];
 	let total = 0;
 	let truncated = false;
@@ -304,21 +358,27 @@ async function readBounded(body: WebResponse["body"], decoder: Transform | null,
 		},
 	});
 	const stages: Array<Readable | Transform | Writable> = decoder ? [source, decoder, sink] : [source, sink];
-	try { await pipeline(stages, { signal }); }
-	catch (error) { if (error !== BYTE_LIMIT) throw error; }
+	try {
+		await pipeline(stages, { signal });
+	} catch (error) {
+		if (error !== BYTE_LIMIT) throw error;
+	}
 	return { bytes: total, text: Buffer.concat(collected).toString("utf8"), truncated };
 }
 
-const ENTITIES: Readonly<Record<string, string>> = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " };
+const ENTITIES: Readonly<Record<string, string>> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 function decodeEntities(input: string): string {
 	return input.replace(/&(#[xX][0-9a-fA-F]+|#[0-9]+|[a-zA-Z][a-zA-Z0-9]*);/g, (whole, body: string) => {
 		let codePoint = -1;
 		if (body.startsWith("#x") || body.startsWith("#X")) codePoint = Number.parseInt(body.slice(2), 16);
 		else if (body.startsWith("#")) codePoint = Number.parseInt(body.slice(1), 10);
 		else return ENTITIES[body] ?? whole;
-		if (!Number.isInteger(codePoint) || codePoint < 0x20 || codePoint > 0x10FFFF) return whole;
-		try { return String.fromCodePoint(codePoint); }
-		catch { return whole; }
+		if (!Number.isInteger(codePoint) || codePoint < 0x20 || codePoint > 0x10ffff) return whole;
+		try {
+			return String.fromCodePoint(codePoint);
+		} catch {
+			return whole;
+		}
 	});
 }
 function cleanControls(input: string): string {
@@ -336,9 +396,18 @@ function stripMarkupBlocks(source: string): string {
 		const nextStyle = lower.indexOf("<style", cursor);
 		let start = -1;
 		let endTag = "";
-		if (nextComment !== -1 && (start === -1 || nextComment < start)) { start = nextComment; endTag = "-->"; }
-		if (nextScript !== -1 && (start === -1 || nextScript < start)) { start = nextScript; endTag = "</script"; }
-		if (nextStyle !== -1 && (start === -1 || nextStyle < start)) { start = nextStyle; endTag = "</style"; }
+		if (nextComment !== -1 && (start === -1 || nextComment < start)) {
+			start = nextComment;
+			endTag = "-->";
+		}
+		if (nextScript !== -1 && (start === -1 || nextScript < start)) {
+			start = nextScript;
+			endTag = "</script";
+		}
+		if (nextStyle !== -1 && (start === -1 || nextStyle < start)) {
+			start = nextStyle;
+			endTag = "</style";
+		}
 		if (start === -1) break;
 		out += source.slice(cursor, start);
 		const close = lower.indexOf(endTag, start + 1);
@@ -347,28 +416,50 @@ function stripMarkupBlocks(source: string): string {
 	return out + source.slice(cursor);
 }
 
-export interface ExtractedContent { title: string; text: string; truncated: boolean; }
+export interface ExtractedContent {
+	title: string;
+	text: string;
+	truncated: boolean;
+}
 
 /** Naive bounded HTML-to-text extraction; removes scripts, styles, comments, tags and control characters. */
 export function extractText(source: string, maxLength = 100_000): ExtractedContent {
 	const titleMatch = /<title[^>]*>([\s\S]{0,4096}?)<\/title\s*>/i.exec(source);
-	const title = titleMatch?.[1] ? cleanControls(decodeEntities(titleMatch[1])).replace(/\s+/g, " ").trim().slice(0, 300) : "";
+	const title = titleMatch?.[1]
+		? cleanControls(decodeEntities(titleMatch[1])).replace(/\s+/g, " ").trim().slice(0, 300)
+		: "";
 	const working = stripMarkupBlocks(source)
 		.replace(/<(?:br|hr)\b[^>]*>/gi, "\n")
-		.replace(/<\/(?:p|div|section|article|aside|header|footer|nav|li|ul|ol|tr|table|tbody|thead|blockquote|pre|h[1-6]|dt|dd)\s*>/gi, "\n")
+		.replace(
+			/<\/(?:p|div|section|article|aside|header|footer|nav|li|ul|ol|tr|table|tbody|thead|blockquote|pre|h[1-6]|dt|dd)\s*>/gi,
+			"\n",
+		)
 		.replace(/<[^>]*>/g, " ");
-	const collapsed = cleanControls(decodeEntities(working)).replace(/[ \t]+/g, " ").replace(/\n[ \t]+/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+	const collapsed = cleanControls(decodeEntities(working))
+		.replace(/[ \t]+/g, " ")
+		.replace(/\n[ \t]+/g, "\n")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
 	return { title, text: collapsed.slice(0, maxLength), truncated: collapsed.length > maxLength };
 }
 
 function isReadableContentType(contentType: string): boolean {
 	if (contentType.startsWith("text/")) return true;
-	return ["application/xhtml+xml", "application/xml", "application/json", "application/rss+xml", "application/atom+xml"].includes(contentType);
+	return [
+		"application/xhtml+xml",
+		"application/xml",
+		"application/json",
+		"application/rss+xml",
+		"application/atom+xml",
+	].includes(contentType);
 }
 
 // --- reader ------------------------------------------------------------------
 
-interface CacheEntry { page: WebPageResult; storedAt: number; }
+interface CacheEntry {
+	page: WebPageResult;
+	storedAt: number;
+}
 const CACHE_MAX_ENTRIES = 32;
 const pageCaches = new WeakMap<WebReadOptions, Map<string, CacheEntry>>();
 
@@ -398,7 +489,11 @@ function cacheSet(options: WebReadOptions, key: string, page: WebPageResult, ttl
 }
 
 export function webReadOptionsFromEnv(env: Record<string, string | undefined> = process.env): WebReadOptions {
-	const list = (value: string | undefined): string[] => (value ?? "").split(",").map((item) => item.trim()).filter((item) => item.length > 0);
+	const list = (value: string | undefined): string[] =>
+		(value ?? "")
+			.split(",")
+			.map((item) => item.trim())
+			.filter((item) => item.length > 0);
 	return {
 		enabled: env.PI861_WEB_READ_ENABLED === "1",
 		policy: {
@@ -409,15 +504,30 @@ export function webReadOptionsFromEnv(env: Record<string, string | undefined> = 
 }
 
 /** Reads a web page under approval, SSRF, redirect, size, time and cancellation bounds. */
-export async function readWebPage(rawUrl: string, options: WebReadOptions, signal?: AbortSignal): Promise<WebPageResult> {
-	if (!options.enabled) throw new Error("Web reading is disabled; configure PI861_WEB_READ_ENABLED=1 and host approvals");
-	if (!options.policy || !Array.isArray(options.policy.internal) || !Array.isArray(options.policy.publicHosts)) throw new Error("Web reading requires an endpoint policy");
+export async function readWebPage(
+	rawUrl: string,
+	options: WebReadOptions,
+	signal?: AbortSignal,
+): Promise<WebPageResult> {
+	if (!options.enabled)
+		throw new Error("Web reading is disabled; configure PI861_WEB_READ_ENABLED=1 and host approvals");
+	if (!options.policy || !Array.isArray(options.policy.internal) || !Array.isArray(options.policy.publicHosts))
+		throw new Error("Web reading requires an endpoint policy");
 	const maxBytes = options.maxBytes ?? 262_144;
 	const timeoutMs = options.timeoutMs ?? 15_000;
 	const maxRedirects = options.maxRedirects ?? 3;
 	const cacheTtlMs = options.cacheTtlMs ?? 600_000;
-	if (!Number.isSafeInteger(maxBytes) || maxBytes < 1024 || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 ||
-		!Number.isSafeInteger(maxRedirects) || maxRedirects < 0 || !Number.isSafeInteger(cacheTtlMs) || cacheTtlMs < 0) throw new Error("Invalid web read limits");
+	if (
+		!Number.isSafeInteger(maxBytes) ||
+		maxBytes < 1024 ||
+		!Number.isSafeInteger(timeoutMs) ||
+		timeoutMs < 1 ||
+		!Number.isSafeInteger(maxRedirects) ||
+		maxRedirects < 0 ||
+		!Number.isSafeInteger(cacheTtlMs) ||
+		cacheTtlMs < 0
+	)
+		throw new Error("Invalid web read limits");
 	signal?.throwIfAborted();
 	const cached = cacheGet(options, rawUrl, cacheTtlMs);
 	if (cached) return { ...cached, cache: "hit" };
@@ -432,7 +542,8 @@ export async function readWebPage(rawUrl: string, options: WebReadOptions, signa
 		if (validated.length === 0) throw new Error("Host did not resolve to any address");
 		if (target.kind === "public") {
 			for (const candidate of validated) {
-				if (isBlockedAddress(candidate.address)) throw new Error("Host resolves to a non-public address; refusing to connect (SSRF guard)");
+				if (isBlockedAddress(candidate.address))
+					throw new Error("Host resolves to a non-public address; refusing to connect (SSRF guard)");
 			}
 		}
 		const rebind = new AbortController();
@@ -458,8 +569,11 @@ export async function readWebPage(rawUrl: string, options: WebReadOptions, signa
 			if (!location) throw new Error("Redirect response without a Location header");
 			if (hop >= maxRedirects) throw new Error(`Web reading exceeded the limit of ${maxRedirects} redirects`);
 			let next: URL;
-			try { next = new URL(location, target.url); }
-			catch { throw new Error("Redirect carried an invalid Location header"); }
+			try {
+				next = new URL(location, target.url);
+			} catch {
+				throw new Error("Redirect carried an invalid Location header");
+			}
 			current = next; // each hop is fully re-approved and re-guarded
 			continue;
 		}
@@ -485,7 +599,10 @@ export async function readWebPage(rawUrl: string, options: WebReadOptions, signa
 			title: extracted.title,
 			truncated: read.truncated || extracted.truncated,
 			cache: "miss",
-			policy: target.kind === "public" ? { kind: "public" } : { kind: "internal-endpoint", endpoint: target.endpoint ?? "" },
+			policy:
+				target.kind === "public"
+					? { kind: "public" }
+					: { kind: "internal-endpoint", endpoint: target.endpoint ?? "" },
 			untrusted: true,
 		};
 		cacheSet(options, rawUrl, page, cacheTtlMs);
