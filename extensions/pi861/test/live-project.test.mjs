@@ -30,7 +30,7 @@ test("actual child processes refill before unrelated slow job, then verify and i
  assert.equal((await coordinator.state()).status,"review");assert.ok(events.indexOf("C:running")<events.indexOf("B:done"),events.join(","));
  assert.equal(await readFile(join(integration.path,"c.txt"),"utf8"),"C");assert.equal(await workspace.head(),base,"main must remain unchanged");
  await coordinator.control("accept");assert.equal((await coordinator.state()).status,"completed");
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("task ownership, role/model matching and versioned append are enforced",async()=>{
  const root=await mkdtemp(join(tmpdir(),"pi861-coordinator-"));try{
@@ -42,11 +42,11 @@ test("task ownership, role/model matching and versioned append are enforced",asy
  await assert.rejects(coordinator.append([spec("B")],0));await coordinator.submit("good",claim.task.lease,["x"],"s");
  assert.equal((await coordinator.state()).board.tasks[0].status,"review");
  await coordinator.verify(claim.task.lease,{accepted:true,evidence:["verified"]},"v");assert.equal((await coordinator.state()).status,"review");
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("scope check rejects out of module changes",async()=>{const {root,path}=await repo();try{
  const service=new Workspaces(path,join(root,"trees"));const ws=await service.create("scopes",1,await service.head());await writeFile(join(ws.path,"outside.txt"),"x");await assert.rejects(service.changed(ws,["module"]),/unreserved/);
- }finally{await rm(root,{recursive:true,force:true});}});
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}});
 test("AX1 second half: an idle runner is woken by rolling appends without recreation",{timeout:30000},async()=>{
  const {root,path}=await repo();
  try{
@@ -65,7 +65,7 @@ test("AX1 second half: an idle runner is woken by rolling appends without recrea
  assert.equal((await coordinator.state()).status,"review");
  assert.equal(await readFile(join(integration.path,"b.txt"),"utf8"),"B");
  await coordinator.control("accept");
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("integration lease defers merging behind a live holder",{timeout:30000},async()=>{
  const {root,path}=await repo();
@@ -83,7 +83,7 @@ test("integration lease defers merging behind a live holder",{timeout:30000},asy
  await settled;
  assert.equal((await coordinator.state()).status,"review");
  assert.equal(await readFile(join(integration.path,"a.txt"),"utf8"),"A");
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("verify rejects stale integration generations; takeover requires converged git",async()=>{
  const root=await mkdtemp(join(tmpdir(),"pi861-lease-"));try{
@@ -102,7 +102,7 @@ test("verify rejects stale integration generations; takeover requires converged 
  await assert.rejects(coordinator.acquireIntegration("integrator:d","/tmp/ws",{probe:()=>"/repo/.git/worktrees/x/index.lock"}),/converged/);
  const takeover=await coordinator.acquireIntegration("integrator:d","/tmp/ws",{probe:()=>undefined});
  assert.equal(takeover.generation,expiring.generation+1);
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("git lock probe detects real worktree locks",async()=>{const {root,path}=await repo();try{
  const service=new Workspaces(path,join(root,"trees"));const ws=await service.create("locks",1,await service.head());
@@ -114,7 +114,7 @@ test("git lock probe detects real worktree locks",async()=>{const {root,path}=aw
  await writeFile(join(gitdir,"refs","heads","feature","topic.lock"),"");
  await writeFile(join(gitdir,"MERGE_HEAD"),""); // an unconcluded merge still owns the tree
  assert.deepEqual(service.gitLocks(ws).sort(),[join(gitdir,"MERGE_HEAD"),join(gitdir,"index.lock"),join(gitdir,"refs","heads","feature","topic.lock")].sort());
- }finally{await rm(root,{recursive:true,force:true});}});
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}});
 test("failed integration leaves a tracked, resolvable repair entry",{timeout:30000},async()=>{
  const {root,path}=await repo();
  try{
@@ -137,7 +137,7 @@ test("failed integration leaves a tracked, resolvable repair entry",{timeout:300
  await waitFor(async()=>{const s=await coordinator.state();return s.board.tasks.find(task=>task.id==="B").attempts>=2;}); // wakeup re-dispatched the repair
  await runner.pause();await settled;
  assert.equal((await coordinator.state()).board.tasks.find(task=>task.id==="B").attempts,2);
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("pause interrupts, unblock+resume re-dispatches, cancel settles the runner",{timeout:40000},async()=>{
  const {root,path}=await repo();
@@ -165,7 +165,7 @@ test("pause interrupts, unblock+resume re-dispatches, cancel settles the runner"
  await coordinator.control("cancel");
  await cancelled;
  assert.equal((await coordinator.state()).status,"cancelled");
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("goal identity separates workspaces when a later goal reuses taskIds",{timeout:30000},async()=>{
  const {root,path}=await repo();
@@ -181,7 +181,7 @@ test("goal identity separates workspaces when a later goal reuses taskIds",{time
  await new ProjectRunner({coordinator,workspaces:workspace,integration:second,checks:[pass()],workers:[worker()]}).start();
  assert.equal((await coordinator.state()).status,"review");
  assert.equal(await readFile(join(second.path,"a.txt"),"utf8"),"A");
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("rolling planner refills below the watermark, retries conflicts and seals",async()=>{
  const root=await mkdtemp(join(tmpdir(),"pi861-rolling-"));try{
@@ -205,7 +205,7 @@ test("rolling planner refills below the watermark, retries conflicts and seals",
   {task:{id:"P",title:"P",dependsOn:["Q"],writeScopes:["p.txt"],capabilities:[],acceptance:["ok"]},execution:{instructions:"p",roleId:"dev",modelId:"test",checkIds:["verify"]}},
   {task:{id:"Q",title:"Q",dependsOn:["P"],writeScopes:["q.txt"],capabilities:[],acceptance:["ok"]},execution:{instructions:"q",roleId:"dev",modelId:"test",checkIds:["verify"]}}],
   (await coordinator.state()).board.version),/cycle/); // incremental cycle check
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("an integration failure is contained: later tasks integrate and a repaired task reintegrates",{timeout:30000},async()=>{ // m4rev-F001
  const {root,path}=await repo();
@@ -230,7 +230,7 @@ test("an integration failure is contained: later tasks integrate and a repaired 
  await settled;
  assert.equal(await readFile(join(integration.path,"a.txt"),"utf8"),"A");
  assert.equal(await readFile(join(integration.path,"b.txt"),"utf8"),"B");
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("rolling planner withdraws and appends within one tick",async()=>{ // m4rev-F002
  const root=await mkdtemp(join(tmpdir(),"pi861-rolling-"));try{
@@ -241,7 +241,7 @@ test("rolling planner withdraws and appends within one tick",async()=>{ // m4rev
  const state=await coordinator.state();
  assert.deepEqual(state.board.tasks.map(task=>task.id).sort(),["A","C"]);
  assert.ok(state.execution["C"]);assert.equal(state.execution["B"],undefined); // withdrawn execution contracts go too
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("idle polls claim nothing and journal no receipts",async()=>{ // m4rev-F003
  const root=await mkdtemp(join(tmpdir(),"pi861-idle-"));try{
@@ -251,7 +251,7 @@ test("idle polls claim nothing and journal no receipts",async()=>{ // m4rev-F003
  const bystander={id:"w",capabilities:[],roleIds:["unrelated"],modelIds:["test"]};
  for(let i=0;i<5;i++)assert.equal(await coordinator.claim(bystander,`idle-${i}`),null);
  assert.equal(Object.keys((await coordinator.state()).receipts).length,before);
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("resume during a pause drain restarts the dispatch loop",{timeout:40000},async()=>{ // m4rev-F004
  const {root,path}=await repo();
@@ -274,7 +274,7 @@ test("resume during a pause drain restarts the dispatch loop",{timeout:40000},as
  for(const task of (await coordinator.state()).board.tasks) if(task.status==="blocked") await coordinator.unblock(task.id);
  await waitFor(async()=>(await coordinator.state()).status==="review");
  await settled;
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("team persists across goals and accounting covers the whole task tree",async()=>{
  const root=await mkdtemp(join(tmpdir(),"pi861-team-"));try{
@@ -299,7 +299,7 @@ test("team persists across goals and accounting covers the whole task tree",asyn
  const capped=new ProjectCoordinator(new FileStateStore(join(root,"capped.json"),emptyProject("p")),{maxConcurrent:1,maxAttempts:1},1);
  await capped.create("capped","a".repeat(40),[spec("A")]);
  assert.ok((await capped.explain()).reasons.some(reason=>reason.kind==="plan-budget"));
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("project goal verbs cover edit, budget, explain and status",async()=>{
  const root=await mkdtemp(join(tmpdir(),"pi861-verbs-"));try{
@@ -317,5 +317,5 @@ test("project goal verbs cover edit, budget, explain and status",async()=>{
  await assert.rejects(projectGoalCommand(coordinator,undefined,[],"bogus"),/Unknown \/goal verb/);
  await projectGoalCommand(coordinator,undefined,[],"resume");
  assert.equal((await coordinator.state()).status,"active");
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });

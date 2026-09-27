@@ -42,7 +42,7 @@ test("HTTP worker: distinct repository, commit bundle transfer, local revalidati
  assert.equal((await coord.state()).status,"review");
  const jobs=JSON.parse(await readFile(join(root,"remote-state.json"),"utf8"));assert.equal(jobs.jobs.length,2);assert.equal(jobs.jobs[0].state,"done");assert.equal(jobs.jobs[1].state,"done");
  assert.notEqual(jobs.jobs[0].id,jobs.jobs[1].id,"goal identity separates remote requests");
- }finally{await server?.close();await rm(root,{recursive:true,force:true});}
+ }finally{await server?.close();await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("dual worker services: parallel isolated checkouts, node-loss takeover and no double dispatch",{timeout:60000},async()=>{
  const root=await mkdtemp(join(tmpdir(),"pi861-dual-"));const children=[];
@@ -143,7 +143,7 @@ test("dual worker services: parallel isolated checkouts, node-loss takeover and 
  second.child.kill("SIGTERM");
  assert.equal(await within(new Promise(resolve=>second.child.once("exit",resolve)),15000,"surviving service did not exit"),0,`surviving service must exit cleanly: ${second.stderr()}`);
  assert.ok(second.announcements.some(item=>item.event==="stopping"));
- }finally{for(const child of children)child.kill("SIGKILL");await rm(root,{recursive:true,force:true});}
+ }finally{for(const child of children)child.kill("SIGKILL");await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test("remote client refuses plaintext non-loopback and embedded URL secrets",()=>{
  assert.throws(()=>new RemoteWorkerClient({url:"http://example.test",token:"a".repeat(32)}));
@@ -181,5 +181,5 @@ test("worker service: executable entry, status announcements and convergent shut
  const code=await new Promise(resolve=>child.once("exit",resolve));
  assert.equal(code,0,`service must exit cleanly: ${stderr}`);
  assert.ok(announcements.some(item=>item.event==="stopping"));
- }finally{child?.kill("SIGKILL");await rm(root,{recursive:true,force:true});}
+ }finally{child?.kill("SIGKILL");await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
