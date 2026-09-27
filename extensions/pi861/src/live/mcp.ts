@@ -60,7 +60,13 @@ export class McpClient {
 		if (method.startsWith("notifications/")) {
 			// Full notification set: list changes invalidate caches; progress and log messages surface to observers.
 			if (method === "notifications/tools/list_changed") this.dirty = true;
-			for (const observer of this.observers) observer(event);
+			for (const observer of this.observers) {
+				try {
+					observer(event);
+				} catch {
+					// Observer failures must never break transport dispatch.
+				}
+			}
 		}
 		if (event.type === "process_error") { this.connected = undefined; this.dirty = true; }
 		if (event.id !== undefined && typeof event.method === "string") {
@@ -109,7 +115,9 @@ export class McpClient {
 				// Reconnect policy applies to establishment only; a failed tools/call is never redispatched.
 				if (attempt >= maxAttempts || signal.aborted || !(error instanceof McpFailure) || error.outcome !== "not_dispatched") throw error;
 				this.teardown();
+				const closedEpoch = this.generation;
 				await sleep(baseDelayMs * 2 ** (attempt - 1), undefined, { signal });
+				if (closedEpoch !== this.generation) throw new Error("MCP client closed during reconnect");
 			}
 		}
 	}

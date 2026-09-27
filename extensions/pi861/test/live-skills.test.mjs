@@ -270,3 +270,40 @@ test("production-isolated mode refuses local transports and endpoint assertions 
   const local = installCapabilities(host, { ...base, clients: [stdio], resourceRules: [{ toolId: "t", accountId: "a", resourceId: "r", endpointConfined: true }] }); // trusted-local keeps both
   local.close();
 });
+test("two skills sharing one binding keep independent availability (R5.5 review fix)", async t => {
+  const { repo, source, directory } = setup(t);
+  const client = new McpClient({ id: "local", accountId: "a", transport: { kind: "stdio", process: { command: process.execPath, args: [fileURLToPath(new URL("./fixtures/mcp-server.mjs", import.meta.url))], cwd: process.cwd() } } });
+  t.after(() => client.close());
+  const metadata = await client.tools(new AbortController().signal);
+  const binding = { toolId: "local/lookup", accountId: "a", resourceId: "project:p1", schemaHash: metadata[0].schemaHash, phase: "execute" };
+  const mcpSkill = await repo.publishMcp("local", "a", metadata, [binding]);
+  await repo.install(source, { id: "a", revision: "auto", group: "debug" });
+  const candidate = await repo.compile("debug", { async compile() {
+    return { id: "shared", revision: "tmp", title: "Shared", category: "development/shared", instructions: "Use the bound lookup.", sources: [],
+      branches: [{ id: "main", when: "Always", instructions: "Use lookup.", environment: [], conflictsWith: [], tools: [binding] }] };
+  } }, new AbortController().signal, [binding]);
+  const shared = await repo.publish(candidate.id, async () => ({ passed: true, evidence: ["structural:contract-validated", "behavioral:fixture-run"] }));
+  const sharedSkill = shared.id;
+  const role = { id: "developer", skillIds: [mcpSkill, sharedSkill], grants: [{ toolId: "local/lookup", accountId: "a", resourceIds: ["project:p1"] }] };
+  const handlers = new Map(), tools = new Map(); let active = ["read"];
+  const host = { getActiveTools: () => active, setActiveTools: (v) => { active = v; }, registerTool: (tool) => tools.set(tool.name, tool), on: (name, fn) => handlers.set(name, fn), appendEntry: () => {} };
+  const cap = installCapabilities(host, { repository: repo, role: () => role, clients: [client], environment: [],
+    resourceRules: [{ ...binding, equals: { project: "p1" } }] });
+  t.after(() => cap.close());
+  const capTool = tools.get("pi861_capabilities");
+  const catalog = await repo.catalog();
+  const activate = async (skillId) => {
+    const branches = catalog.branches(role, skillId).map((b) => b.id);
+    const revision = catalog.browse(role).find((s) => s.id === skillId).revision;
+    await capTool.execute(`act-${skillId}`, { action: "activate", skillId, revision, branches, phase: "execute" });
+  };
+  await activate(mcpSkill);
+  await activate(sharedSkill);
+  const name = active.find((n) => n.startsWith("pi861_mcp_"));
+  assert.ok(name, "shared binding registered once");
+  await capTool.execute("deact-shared", { action: "deactivate", skillId: sharedSkill });
+  assert.ok(active.includes(name), "registration survives sibling deactivation");
+  const result = (await tools.get(name).execute("after-deactivation", { project: "p1" })).content[0].text;
+  assert.match(result, /looked up p1/);
+  void directory;
+});

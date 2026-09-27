@@ -112,7 +112,7 @@ export class SkillRepository {
 		const snapshot = await this.store.read();
 		const active = snapshot.sources.filter((source) => snapshot.activeSources[source.id] === source.revision);
 		const groups = [...new Set(active.map((source) => source.group))];
-		const group = override?.group ?? await classify(draft, groups, signal);
+		const group = override?.group ?? (await classify(structuredClone(draft), groups, signal));
 		if (typeof group !== "string" || !/^[\w./-]{1,160}$/.test(group) || group.includes("..")) throw new Error("Invalid capability group");
 		const source = { ...draft, group };
 		await this.persist(source);

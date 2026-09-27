@@ -104,7 +104,11 @@ export function installCapabilities(pi: CapabilityHost, options: CapabilityOptio
 				description: `${entry.tool.description}\nBound resource: ${binding.resourceId}. Use only for the activated Skill.`,
 				parameters: entry.tool.inputSchema,
 				execute: async (callId, args, inputSignal, _onUpdate, ctx) => {
-					const current = activations.get(activation.skillId);
+					// R5.5: the same binding can back multiple activations; resolve any live holder instead of
+					// pinning one skill's closure, so deactivating a sibling never breaks this tool.
+					const current = [...activations.values()].find((candidate) =>
+						candidate.tools.some((tool) => bindingName(tool) === name),
+					);
 					if (!current) throw new Error("Skill is no longer active");
 					const effectiveSignal = inputSignal ?? new AbortController().signal;
 					const available = await entry.client.tools(effectiveSignal, true);
@@ -115,7 +119,7 @@ export function installCapabilities(pi: CapabilityHost, options: CapabilityOptio
 					const serialized = JSON.stringify(response);
 					const maxBytes = options.maxResultBytes ?? 32_000;
 					if (Buffer.byteLength(serialized) > maxBytes) {
-						const reference = await options.repository.storeResult(response, { roleId: options.role().id, skillId: activation.skillId, binding });
+				const reference = await options.repository.storeResult(response, { roleId: options.role().id, skillId: current.skillId, binding });
 						return { content: [{ type: "text" as const, text: JSON.stringify({ resultRef: reference, bytes: Buffer.byteLength(serialized), complete: false, instruction: "Use pi861_capabilities action=result to read pages. Do not treat this as the full result." }) }], details: { reference } };
 					}
 					return { content: [{ type: "text" as const, text: serialized }], details: { toolId: binding.toolId }, isError: record(response)?.isError === true };
