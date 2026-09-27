@@ -414,8 +414,10 @@ export class SkillRepository {
 				...new Set([...(state.revoked?.[id] ?? []), ...order.slice(order.indexOf(revision) + 1)]),
 			].filter((item) => item !== revision);
 			state.active[id] = revision;
-			if (revoked.length) (state.revoked ??= {})[id] = revoked;
-			else if (state.revoked) delete state.revoked[id];
+			if (revoked.length) {
+				state.revoked ??= {};
+				state.revoked[id] = revoked;
+			} else if (state.revoked) delete state.revoked[id];
 		});
 	}
 	/** Uninstalls a source package plus every runtime version compiled from it. Running activations keep their pinned snapshot; restore revalidates. */
@@ -433,8 +435,10 @@ export class SkillRepository {
 				const revoked = state.revoked?.[skill.id];
 				if (revoked) {
 					const kept = revoked.filter((item) => item !== skill.revision);
-					if (kept.length) (state.revoked ??= {})[skill.id] = kept;
-					else delete state.revoked?.[skill.id];
+					if (kept.length) {
+						state.revoked ??= {};
+						state.revoked[skill.id] = kept;
+					} else delete state.revoked?.[skill.id];
 				}
 			}
 			state.candidates = state.candidates.filter(
