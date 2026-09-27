@@ -53,10 +53,10 @@ import { OperationJournal } from "./src/live/operations.ts";
 import { PiRpcSession } from "./src/live/pi-rpc.ts";
 import { ProjectRunner } from "./src/live/project-runner.ts";
 import { RemoteWorkerClient } from "./src/live/remote-worker.ts";
-import { StreamAttempt } from "./src/live/stream-adapter.ts";
 import { emptySkillState, SkillRepository, type SkillSource } from "./src/live/skill-repository.ts";
 import { type CapabilityHost, installCapabilities, type ResourceRule } from "./src/live/skills-host.ts";
 import { FileStateStore, PostgresStateStore, ResilientBackend, type StateStore } from "./src/live/store.ts";
+import { StreamAttempt } from "./src/live/stream-adapter.ts";
 import { guardWorkerTool } from "./src/live/worker-guard.ts";
 import { type CheckCommand, type Workspace, Workspaces } from "./src/live/workspace.ts";
 import { controlledToolCapture, digest, type MemoryBackend, resolveMemorySettings } from "./src/memory.ts";
@@ -479,7 +479,10 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 						},
 					}
 				: config.models;
-			modelRuntime = new ModelRuntime<{ transcript: Context; options?: ModelsSimpleStreamOptions }, AssistantMessage>(
+			modelRuntime = new ModelRuntime<
+				{ transcript: Context; options?: ModelsSimpleStreamOptions },
+				AssistantMessage
+			>(
 				policy,
 				(model, attempt, request, signal, hooks) =>
 					direct(
@@ -1064,7 +1067,7 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 					const base = await workspaces.head();
 					// Read-only Pi planner inspects real source files; its tools exclude shell and writes.
 					// The planner is an out-of-process model consumer: admission reserves one budget
-				// slot per goal input before it runs; observed turns settle actual usage afterwards.
+					// slot per goal input before it runs; observed turns settle actual usage afterwards.
 					const planner = target(project.plannerModelId);
 					await auxiliaryService(planner.id).meterExternal("planner", digest(["planner", input]), planner.id);
 					const plannerSession = new PiRpcSession({

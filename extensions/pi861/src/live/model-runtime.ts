@@ -178,12 +178,7 @@ export class UsageLedger {
 	 * unknown; a later record with known usage updates the SAME entry in place instead
 	 * of adding another. Once an entry is fully known it is final: further records for
 	 * the same key are no-ops, so duplicate events never count twice. */
-	async recordExternal(
-		receiptKey: string,
-		target: ModelTarget,
-		usage: ModelUsage,
-		label: string,
-	): Promise<void> {
+	async recordExternal(receiptKey: string, target: ModelTarget, usage: ModelUsage, label: string): Promise<void> {
 		if (!receiptKey) throw new Error("Invalid usage receipt key");
 		UsageLedger.validateReport(target, "auxiliary", usage);
 		const cost = estimateCost(target, usage);
@@ -724,8 +719,7 @@ export class AuxiliaryModelService {
 			throw new Error("Invalid external turn receipt");
 		const key = digest(["external", kind, runId, turnOrdinal, targetId]);
 		await this.services.budget?.reserve(key);
-		if (this.services.ledger)
-			await this.services.ledger.recordExternal(key, target, usage, `auxiliary:${kind}`);
+		if (this.services.ledger) await this.services.ledger.recordExternal(key, target, usage, `auxiliary:${kind}`);
 	}
 }
 

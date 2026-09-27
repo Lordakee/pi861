@@ -48,8 +48,7 @@ function gateToolCall(value: unknown): GatedToolCall {
 	if (!call || typeof call.id !== "string" || !call.id || typeof call.name !== "string" || !call.name)
 		throw new ModelFailure("invalid");
 	const args = call.arguments;
-	if (typeof args !== "object" || args === null || Array.isArray(args))
-		throw new ModelFailure("invalid"); // tool arguments must be a JSON object
+	if (typeof args !== "object" || args === null || Array.isArray(args)) throw new ModelFailure("invalid"); // tool arguments must be a JSON object
 	return { id: call.id, name: call.name, args: args as Record<string, unknown> };
 }
 /** The final gate before the host sees the message: every tool call it carries must be
