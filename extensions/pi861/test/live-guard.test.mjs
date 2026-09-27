@@ -13,3 +13,15 @@ test("native worker paths are constrained before dispatch",async()=>{
  assert.throws(()=>guardWorkerTool(guard,"edit",{path:".git/config"}),/escapes/);assert.throws(()=>guardWorkerTool(guard,"bash",{command:"anything"}),/disabled/);
  }finally{await rm(dir,{recursive:true,force:true});}
 });
+test("worker shell gate stays closed unless allowWorkerShell is explicitly enabled (R5.10)",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"pi861-guard-shell-"));try{
+ const closed={root:dir,writeScopes:["."],allowShell:false};
+ assert.throws(()=>guardWorkerTool(closed,"bash",{command:"ls"}),/disabled/);
+ assert.throws(()=>guardWorkerTool(closed,"powershell",{command:"Get-ChildItem"}),/disabled/);
+ const open={...closed,allowShell:true}; // explicit operator opt-in only
+ assert.doesNotThrow(()=>guardWorkerTool(open,"bash",{command:"ls"}));
+ assert.doesNotThrow(()=>guardWorkerTool(open,"powershell",{command:"Get-ChildItem"}));
+ // enabling shell does not relax file confinement
+ assert.throws(()=>guardWorkerTool({...open,writeScopes:["module"]},"write",{path:"other.ts"}),/reservation/);
+ }finally{await rm(dir,{recursive:true,force:true});}
+});

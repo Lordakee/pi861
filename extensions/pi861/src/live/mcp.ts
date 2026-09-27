@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { digest } from "../memory.ts";
 import { record } from "../search.ts";
 import { LineProcess, type ProcessSpec } from "./line-process.ts";
@@ -6,7 +7,26 @@ import { LineProcess, type ProcessSpec } from "./line-process.ts";
 export interface McpTool { name: string; description: string; inputSchema: Record<string, unknown>; schemaHash: string; }
 export type McpTransport = { kind: "stdio"; process: ProcessSpec } |
 	{ kind: "http"; url: string; headers?: Record<string, string>; allowLoopbackHttp?: boolean };
-export interface McpServer { id: string; accountId: string; transport: McpTransport; timeoutMs?: number; maxBytes?: number; }
+export interface McpServer { id: string; accountId: string; transport: McpTransport; timeoutMs?: number; maxBytes?: number;
+	/** Bounded reconnection for connection establishment only; tool dispatches are never replayed. */
+	reconnect?: { maxAttempts?: number; baseDelayMs?: number };
+}
+export type DeploymentMode = "trusted-local" | "production-isolated";
+/**
+ * Boundary contract between deployment modes (R5.11):
+ * - trusted-local: one operator-controlled machine. Local stdio servers and explicitly flagged loopback HTTP are
+ *   accepted; raw Skill sources, shell and scripts stay behind the same role checks and state stays single-tenant.
+ * - production-isolated: a shared runtime host. MCP servers must be remote HTTPS endpoints (no local child processes,
+ *   no plain HTTP even on loopback) so one tenant's server cannot read another tenant's process or filesystem.
+ */
+export function enforceDeploymentMode(mode: DeploymentMode, servers: McpServer[]): void {
+	if (mode !== "production-isolated") return;
+	for (const server of servers) {
+		if (server.transport.kind !== "http" || new URL(server.transport.url).protocol !== "https:") {
+			throw new Error("Production-isolated mode requires HTTPS MCP endpoints; local transports are not trusted boundaries");
+		}
+	}
+}
 export class McpFailure extends Error {
 	readonly outcome: "not_dispatched" | "unknown" | "reported_error";
 	constructor(message: string, outcome: McpFailure["outcome"]) { super(message); this.outcome = outcome; }
@@ -22,6 +42,7 @@ export class McpClient {
 	private generation = 0;
 	private dirty = true;
 	private cached: McpTool[] = [];
+	private readonly observers = new Set<(event: Record<string, unknown>) => void>();
 	constructor(server: McpServer) {
 		if (!/^[a-zA-Z0-9_-]+$/.test(server.id) || !server.accountId) throw new Error("Invalid MCP server identity");
 		if (server.transport.kind === "http") {
@@ -35,23 +56,45 @@ export class McpClient {
 		this.server = structuredClone(server);
 	}
 	private message(event: Record<string, unknown>): void {
-		if (event.method === "notifications/tools/list_changed") this.dirty = true;
+		const method = typeof event.method === "string" ? event.method : "";
+		if (method.startsWith("notifications/")) {
+			// Full notification set: list changes invalidate caches; progress and log messages surface to observers.
+			if (method === "notifications/tools/list_changed") this.dirty = true;
+			for (const observer of this.observers) observer(event);
+		}
 		if (event.type === "process_error") { this.connected = undefined; this.dirty = true; }
 		if (event.id !== undefined && typeof event.method === "string") {
-			// No model sampling, elicitation or execution initiated by an untrusted server.
-			this.process?.send({ jsonrpc: "2.0", id: event.id, error: { code: -32601, message: "Client capability not supported" } });
+			// Protocol ping is answered; no model sampling, elicitation or execution initiated by an untrusted server.
+			const reply = method === "ping" ? { jsonrpc: "2.0", id: event.id, result: {} }
+				: { jsonrpc: "2.0", id: event.id, error: { code: -32601, message: "Client capability not supported" } };
+			this.process?.send(reply);
 		}
+	}
+	onNotification(listener: (event: Record<string, unknown>) => void): () => void {
+		this.observers.add(listener); return () => this.observers.delete(listener);
 	}
 	async connect(signal: AbortSignal): Promise<void> {
 		signal.throwIfAborted();
 		if (!this.connected) {
-			const epoch = this.generation;
-			this.connected = (async () => {
+			this.connected = this.establish(signal).catch((error: unknown) => { this.connected = undefined; this.teardown(); throw error; });
+		}
+		await this.connected;
+		signal.throwIfAborted();
+	}
+	private teardown(): void {
+		this.generation++; this.process?.close(); this.process = undefined; this.session = undefined; this.dirty = true;
+	}
+	private async establish(signal: AbortSignal): Promise<void> {
+		const maxAttempts = Math.max(1, Math.min(8, this.server.reconnect?.maxAttempts ?? 1));
+		const baseDelayMs = this.server.reconnect?.baseDelayMs ?? 200;
+		for (let attempt = 1; ; attempt++) {
+			try {
 				if (this.server.transport.kind === "stdio") {
 					this.process?.close();
 					this.process = new LineProcess(this.server.transport.process, this.server.maxBytes);
 					this.process.onEvent((event) => this.message(event));
 				}
+				const epoch = this.generation;
 				const reply = record(await this.raw("initialize", {
 					protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "pi861", version: "0.2.0-alpha.1" },
 				}, signal));
@@ -61,10 +104,14 @@ export class McpClient {
 				this.protocol = String(reply.protocolVersion);
 				await this.notify("notifications/initialized", {}, signal);
 				if (epoch !== this.generation) throw new Error("Stale MCP connection");
-			})().catch((error: unknown) => { this.connected = undefined; this.process?.close(); throw error; });
+				return;
+			} catch (error) {
+				// Reconnect policy applies to establishment only; a failed tools/call is never redispatched.
+				if (attempt >= maxAttempts || signal.aborted || !(error instanceof McpFailure) || error.outcome !== "not_dispatched") throw error;
+				this.teardown();
+				await sleep(baseDelayMs * 2 ** (attempt - 1), undefined, { signal });
+			}
 		}
-		await this.connected;
-		signal.throwIfAborted();
 	}
 	private async notify(method: string, params: Record<string, unknown>, signal: AbortSignal): Promise<void> {
 		const payload = { jsonrpc: "2.0", method, params };
@@ -121,7 +168,10 @@ export class McpClient {
 					if (message.id === payload.id && ("result" in message || "error" in message)) return message;
 					this.message(message);
 					if (message.id !== undefined && typeof message.method === "string") {
-						await this.http({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Not supported" } }, effective);
+						const answer = typeof message.method === "string" && message.method === "ping"
+							? { jsonrpc: "2.0", id: message.id, result: {} }
+							: { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Not supported" } };
+						await this.http(answer, effective);
 					}
 				}
 			}
@@ -135,12 +185,19 @@ export class McpClient {
 	private async raw(method: string, params: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		const id = randomUUID();
 		const payload = { jsonrpc: "2.0", method, params, id };
+		// Cancellation propagation: tell the server the request is abandoned so it can stop work (R5.6).
+		const propagateCancel = (): void => {
+			void this.notify("notifications/cancelled", { requestId: id, reason: "cancelled" }, AbortSignal.timeout(2_000)).catch(() => {});
+		};
+		signal.addEventListener("abort", propagateCancel, { once: true });
 		let reply: Record<string, unknown> | undefined;
 		try {
 			reply = this.process ? await this.process.request(payload, signal, this.server.timeoutMs ?? 30_000) : await this.http(payload, signal);
 		} catch (error) {
 			if (error instanceof McpFailure) throw error;
 			throw new McpFailure(signal.aborted ? "MCP call cancelled; reconcile any dispatched operation" : "MCP transport failed", method === "tools/call" ? "unknown" : "not_dispatched");
+		} finally {
+			signal.removeEventListener("abort", propagateCancel);
 		}
 		if (reply?.error) throw new McpFailure("MCP server reported an operation error", "reported_error");
 		if (!reply || !("result" in reply)) throw new Error("Missing MCP result");
@@ -177,7 +234,6 @@ export class McpClient {
 		return this.raw("tools/call", { name, arguments: args }, signal); // Deliberately never retry.
 	}
 	close(): void {
-		this.generation++; this.process?.close(); this.process = undefined; this.connected = undefined;
-		this.session = undefined; this.dirty = true;
+		this.teardown(); this.connected = undefined;
 	}
 }

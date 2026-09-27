@@ -2,7 +2,7 @@ import type { PiContext, PiHost } from "../../index.ts";
 import { authorizeInvocation, type Activation, type Role, type ToolBinding } from "../capabilities.ts";
 import { digest } from "../memory.ts";
 import { record } from "../search.ts";
-import { McpClient, type McpTool } from "./mcp.ts";
+import { enforceDeploymentMode, McpClient, type DeploymentMode, type McpTool } from "./mcp.ts";
 import { SkillRepository } from "./skill-repository.ts";
 import type { OperationJournal } from "./operations.ts";
 
@@ -27,12 +27,21 @@ export interface CapabilityOptions {
 	baseTools?: string[];
 	maxResultBytes?: number;
 	operations?: OperationJournal;
+	/** Deployment boundary (R5.11); defaults to trusted-local. */
+	deploymentMode?: DeploymentMode;
 }
 function requireText(value: unknown): string { if (typeof value !== "string" || !value.trim()) throw new Error("Nonempty string required"); return value; }
 function array(value: unknown): string[] { if (!Array.isArray(value) || value.some((part) => typeof part !== "string")) throw new Error("String array required"); return value; }
-function bindingName(binding: ToolBinding): string { return `pi861_mcp_${digest([binding.toolId, binding.accountId, binding.resourceId]).slice(0, 20)}`; }
+/** Full tool identity: service, account, resource and schema version together name one binding (R5.5). */
+function bindingName(binding: ToolBinding): string { return `pi861_mcp_${digest([binding.toolId, binding.accountId, binding.resourceId, binding.schemaHash]).slice(0, 20)}`; }
 
 export function installCapabilities(pi: CapabilityHost, options: CapabilityOptions): { close(): void } {
+	const mode = options.deploymentMode ?? "trusted-local";
+	enforceDeploymentMode(mode, options.clients.map((client) => client.server));
+	if (mode === "production-isolated") {
+		// An operator assertion cannot substitute argument confinement on a shared host.
+		for (const rule of options.resourceRules) if (rule.endpointConfined) throw new Error("Production-isolated mode requires explicit argument confinement (equals), not endpoint assertions");
+	}
 	const activations = new Map<string, Activation>();
 	const registered = new Set<string>();
 	let initial: string[] = [];
@@ -51,17 +60,21 @@ export function installCapabilities(pi: CapabilityHost, options: CapabilityOptio
 		pi.setActiveTools([...new Set([...base, "pi861_capabilities", ...names])]);
 	}
 	function save(): void { pi.appendEntry("pi861.capabilities.v2", [...activations.values()].map((value) => ({ skillId: value.skillId, revision: value.skillRevision, branches: value.branchIds, phase: value.phase }))); }
-	async function describe(bindings: ToolBinding[], signal: AbortSignal): Promise<Map<string, { client: McpClient; tool: McpTool }>> {
-		const map = new Map<string, { client: McpClient; tool: McpTool }>();
+	async function describe(bindings: ToolBinding[], signal: AbortSignal): Promise<{ byBinding: Map<string, { client: McpClient; tool: McpTool }>; definitions: { id: string; schemaHash: string }[] }> {
+		// Keyed by the full binding identity so the same tool bound to several resources cannot overwrite
+		// its siblings' metadata (R5.5).
+		const byBinding = new Map<string, { client: McpClient; tool: McpTool }>();
+		const definitions = new Map<string, { id: string; schemaHash: string }>();
 		for (const binding of bindings) {
 			const client = options.clients.find((client) => binding.toolId.startsWith(`${client.server.id}/`) && binding.accountId === client.server.accountId);
 			if (!client) throw new Error("Authorized MCP endpoint is not configured");
 			const name = binding.toolId.slice(client.server.id.length + 1);
 			const tool = (await client.tools(signal)).find((tool) => tool.name === name);
 			if (!tool || tool.schemaHash !== binding.schemaHash) throw new Error("MCP metadata changed; rebuild binding");
-			map.set(binding.toolId, { client, tool });
+			byBinding.set(bindingName(binding), { client, tool });
+			definitions.set(binding.toolId, { id: binding.toolId, schemaHash: tool.schemaHash });
 		}
-		return map;
+		return { byBinding, definitions: [...definitions.values()] };
 	}
 	function enforceResource(binding: ToolBinding, args: Record<string, unknown>): void {
 		const rule = options.resourceRules.find((rule) => rule.toolId === binding.toolId && rule.accountId === binding.accountId && rule.resourceId === binding.resourceId);
@@ -80,11 +93,10 @@ export function installCapabilities(pi: CapabilityHost, options: CapabilityOptio
 		const catalog = await options.repository.catalog();
 		const planned = await options.repository.bindingPlan(id, revision, branches, phase, options.role(), options.environment);
 		const metadata = await describe(planned, signal);
-		const definitions = [...metadata.entries()].map(([id, entry]) => ({ id, schemaHash: entry.tool.schemaHash }));
-		const activation = catalog.activate(options.role(), id, revision, branches, phase, options.environment, definitions);
+		const activation = catalog.activate(options.role(), id, revision, branches, phase, options.environment, metadata.definitions);
 		if (generation !== epoch) throw new Error("Session changed during skill activation");
 		for (const binding of activation.tools) {
-			const entry = metadata.get(binding.toolId);
+			const entry = metadata.byBinding.get(bindingName(binding));
 			if (!entry) throw new Error("Tool metadata missing");
 			const name = bindingName(binding);
 			registered.add(name);
