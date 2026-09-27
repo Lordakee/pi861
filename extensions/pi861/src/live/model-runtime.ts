@@ -149,6 +149,9 @@ export interface RuntimeServices<TResponse> {
 /** Controls inference requests only; a completed tool invocation is never put inside this retry loop. */
 export class ModelRuntime<TContext, TResponse> {
 	private readonly policy: ModelPolicy;
+	/** Per-startup salt: a restarted instance must never hit a predecessor's reservation intent.
+	 * Crash-replay of an unfinished attempt then over-counts (conservative) instead of silently under-counting. */
+	private readonly instanceSalt = randomUUID();
 	private requirements: Requirements;
 	private recovery: ModelRecovery;
 	private mode: ExecutionMode = "fixed";
@@ -275,7 +278,7 @@ export class ModelRuntime<TContext, TResponse> {
 		try {
 			return await inferWithRecovery(this.recovery, async (target, attempt, requestSignal, hooks) => {
 				if (this.requests >= this.policy.maxRequests) throw new ModelFailure("budget_exhausted");
-				await this.services.budget?.reserve(digest(["main", attempt.generation, attempt.configId, attempt.configRevision]));
+				await this.services.budget?.reserve(digest(["main", this.instanceSalt, attempt.generation, attempt.configId, attempt.configRevision]));
 				this.requests++; this.persist();
 				try {
 					const result = await this.infer(target, context, requestSignal, hooks);

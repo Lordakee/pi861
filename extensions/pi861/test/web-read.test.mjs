@@ -323,6 +323,14 @@ test("controlled results page long payloads instead of inlining them", () => {
 	assert.equal(finalPage.nextOffset, finalPage.totalCharacters);
 	assert.equal(JSON.parse(assembled).blob.length, 200_000);
 });
+
+test("a controlled-result reference past its TTL fails even on the first read (wire-rev F005)", async () => {
+	const store = new ControlledResults({ maxEntries: 2, maxTotalBytes: 100_000, ttlMs: 5 });
+	const big = store.wrap({ blob: "x".repeat(40_000) }, 1000);
+	assert.equal(big.inline, false);
+	await new Promise((resolve) => setTimeout(resolve, 15));
+	assert.throws(() => store.read(big.reference.resultRef, 0), /not found or expired/);
+});
 test("extractText stays linear on adversarial markup padding (M5 review fix)", () => {
   const hostile = "<div>start</div>" + "<script>aaaa".repeat(30_000) + "</script><div>end</div>";
   const started = Date.now();

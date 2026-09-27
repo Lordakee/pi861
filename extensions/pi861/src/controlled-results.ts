@@ -68,8 +68,8 @@ export class ControlledResults {
 	}
 
 	read(ref: string, offset = 0): ResultPage {
+		this.prune(); // expire first: a reference past its TTL must fail even on its first read
 		const entry = this.entries.get(ref);
-		this.prune();
 		if (!entry) throw new Error("Result reference not found or expired");
 		if (!Number.isSafeInteger(offset) || offset < 0 || offset > entry.text.length) throw new Error("Invalid result offset");
 		const end = Math.min(entry.text.length, offset + RESULT_PAGE_CHARACTERS);

@@ -18,6 +18,9 @@ export default function fixture(pi){
  const input=JSON.parse(text(users.at(-1)).split("\n\n").at(-1));
  result.content=[{type:"text",text:JSON.stringify({abstract:"Generated fixture summary",overview:"Generated with source evidence",facts:[{text:input.text.slice(0,20),quote:input.text.slice(0,20)}]})}];
  }else if(process.env.PI861_FIXTURE_FAIL==="1"&&model.id==="cheap"&&!failed){failed=true;result.content=[];result.stopReason="error";result.errorMessage="ECONNRESET fixture injected failure";}
+ else if(prompt.includes("fixture-route")&&!messages.some(m=>m.role==="toolResult"&&m.toolName==="pi861_model_route")){
+ result.content=[{type:"toolCall",id:"fixture-route-call",name:"pi861_model_route",arguments:{signal:"phase_complete",reason:"fixture phase finished",phase:"p1",verificationPassed:true}}];result.stopReason="toolUse";
+ }
  else if(prompt.includes("fixture-write")&&!messages.some(m=>m.role==="toolResult"&&m.toolName==="write")){
  result.content=[{type:"toolCall",id:"fixture-write-call",name:"write",arguments:{path:"fixture.txt",content:"written through real Pi"}}];result.stopReason="toolUse";
  }

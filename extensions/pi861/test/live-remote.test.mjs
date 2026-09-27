@@ -115,7 +115,7 @@ test("dual worker services: parallel isolated checkouts, node-loss takeover and 
  // Duplicate commands must be guarded, never applied twice: no double dispatch.
  const failover=new ProjectRunner({coordinator:coord,workspaces:ws,checks,integration,idlePollMs:100,workers:[member(2)]});
  await failover.resume(); // surviving node keeps serving the reconciled goal
- await assert.rejects(failover.resume(),/Only a paused goal may resume/);
+ await failover.resume(); // wire-rev-F003: duplicate resume on an active goal is an idempotent no-op, never a second dispatch loop
  await coord.unblock("K");
  await assert.rejects(coord.unblock("K"),/Only a blocked task can be requeued/);
  await within(failover.start(),30000,"reconciled goal did not settle");

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { AuxiliaryModelService, ModelRuntime, RequestBudget, resolveModelPolicy, UsageLedger } from "../src/live/model-runtime.ts";
+import { routeClassifier } from "../src/live/compilers.ts";
 import { HealthService, ModelFailure } from "../src/routing.ts";
 const targets = [
  {id:"cheap",revision:"1",provider:"test",model:"cheap",quality:1,costRank:1,contextWindow:10000,capabilities:["tools"],enabled:true,account:"acct-a",endpoint:"edge-1",billing:{inputPerMillionTokens:1,outputPerMillionTokens:2},dataEgress:"open"},
@@ -185,6 +186,33 @@ test("auxiliary reservations do not replay across instances (m1rev-F003)",async(
  await make().generate("intake","same prompt",signal());
  await make().generate("intake","same prompt",signal());
  assert.equal(budgetStore.state.used,2);
+});
+test("main reservations do not collide across instances (wire-rev-F001)",async()=>{
+ const budgetStore=memstore({limit:10,used:0,intents:{}});
+ // Two ModelRuntime instances (host process and worker process) share one durable budget store
+ // and both restart their attempt generation at 1: identical main intents must not silently skip.
+ const make=()=>new ModelRuntime(policy(),async m=>m.id,async()=>true,undefined,()=>{},{budget:new RequestBudget(budgetStore.store)});
+ const first=make(),second=make();
+ try{first.setTask("same task");second.setTask("same task");
+  await first.call({},signal());await second.call({},signal());}finally{first.close();second.close();}
+ assert.equal(budgetStore.state.used,2);
+ assert.equal(Object.keys(budgetStore.state.intents).length,2);
+});
+test("route classifier prompt carries routing evidence (wire-rev-F002)",async()=>{
+ const prompts=[];
+ const classifier=routeClassifier(async prompt=>{prompts.push(prompt);return JSON.stringify({mode:"fixed",targetId:"cheap",minQuality:1,reason:"stable"});});
+ const decision=await classifier.classify("task text",targets,signal(),[
+  {signal:"phase_complete",reason:"checks passed",phase:"p1",verificationPassed:true,at:123},
+  {signal:"no_progress",reason:"identical output",phase:undefined,verificationPassed:undefined,at:456},
+ ]);
+ assert.deepEqual(decision,{mode:"fixed",targetId:"cheap",minQuality:1,reason:"stable"});
+ const prompt=prompts[0];
+ assert.match(prompt,/phase_complete/);
+ assert.match(prompt,/checks passed/);
+ assert.match(prompt,/"phase":"p1"/);
+ assert.match(prompt,/"verificationPassed":true/);
+ assert.match(prompt,/no_progress/);
+ assert.match(prompt,/identical output/);
 });
 test("policy layers narrow the inherited policy",()=>{
  const base=policy();

@@ -75,7 +75,9 @@ export class ProjectRunner {
 	async pause(): Promise<void> { await this.options.coordinator.control("pause"); this.controller?.abort(); this.wake(); await this.runPromise?.catch(() => {}); }
 	/** Resume dispatch on the same runner instance; no reconstruction required. */
 	async resume(): Promise<void> {
-		await this.options.coordinator.control("resume");
+		try { await this.options.coordinator.control("resume"); }
+		// A hard crash can leave the persisted goal active with no dispatch loop; resume then just restarts dispatch.
+		catch (error) { if (!/Only a paused goal may resume/.test(String(error))) throw error; }
 		// A resume landing while pause() is still draining the loop must wait out that drain,
 		// mirroring pause(); otherwise the drained loop exits with no restart and the active goal strands.
 		if (this.controller?.signal.aborted) await this.runPromise?.catch(() => {});

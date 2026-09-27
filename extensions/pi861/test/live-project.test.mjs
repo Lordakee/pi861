@@ -167,6 +167,20 @@ test("pause interrupts, unblock+resume re-dispatches, cancel settles the runner"
  assert.equal((await coordinator.state()).status,"cancelled");
  }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
+test("resume on a crash-orphaned active goal restarts dispatch (wire-rev-F003)",{timeout:40000},async()=>{
+ const {root,path}=await repo();
+ try{
+ const workspace=new Workspaces(path,join(root,"trees"));const base=await workspace.head();
+ const coordinator=new ProjectCoordinator(new FileStateStore(join(root,"state.json"),emptyProject("fixture")),{maxConcurrent:1,maxAttempts:2});
+ await coordinator.create("crash goal",base,[spec("A")]);
+ assert.equal((await coordinator.state()).status,"active"); // what a hard crash leaves behind: no runner ever started
+ const runner=new ProjectRunner({coordinator,workspaces:workspace,integration:await workspace.create("integration",1,base),checks:[pass()],workers:[worker()],idlePollMs:100});
+ await runner.resume(); // first line used to throw "Only a paused goal may resume"
+ await waitFor(async()=>(await coordinator.state()).status==="review");
+ await coordinator.control("accept");
+ await runner.pause();
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
+});
 test("goal identity separates workspaces when a later goal reuses taskIds",{timeout:30000},async()=>{
  const {root,path}=await repo();
  try{

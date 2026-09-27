@@ -384,12 +384,14 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		pi.on("before_agent_start", (event) => { modelRuntime?.setTask(event.prompt); });
 		pi.registerTool({
 			name: "pi861_model_route", label: "Model capability signal",
-			description: "Report a concrete capability gap, changed scope, failed verification, missing progress, or completed phase with its reason. The runtime changes models only at the next safe request boundary.",
+			description: "Report a concrete capability gap, changed scope, failed verification, missing progress, or completed phase with its reason. A completed phase can carry its phase id and verification outcome. The runtime changes models only at the next safe request boundary.",
 			parameters: {
 				type: "object",
 				properties: {
 					reason: { type: "string", minLength: 1, maxLength: 2000 },
 					signal: { type: "string", enum: [...ROUTE_SIGNALS] },
+					phase: { type: "string", maxLength: 200 },
+					verificationPassed: { type: "boolean" },
 				},
 				required: ["reason", "signal"], additionalProperties: false,
 			},
@@ -400,7 +402,9 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 				if (!reason || typeof signal !== "string" || !ROUTE_SIGNALS.includes(signal as RouteSignal)) {
 					throw new Error("Model route report requires a reason and a known signal");
 				}
-				modelRuntime?.report(signal as RouteSignal, { reason });
+				const phase = typeof value?.phase === "string" && value.phase ? value.phase : undefined;
+				const verificationPassed = typeof value?.verificationPassed === "boolean" ? value.verificationPassed : undefined;
+				modelRuntime?.report(signal as RouteSignal, { reason, phase, verificationPassed });
 				return { content: [{ type: "text", text: "Recorded; route policy is evaluated before the next model request." }], details: {} };
 			},
 		});
@@ -458,13 +462,22 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		await memory.put({ requestId: id, expectedRevision: null, item: capture.item });
 	});
 	pi.registerCommand("memory-maintain", {
-		description: "Process a bounded batch of memory enrichment jobs; dead | retry JOB | abandon JOB",
+		description: "Process a bounded batch of memory enrichment jobs; dead | retry JOB | abandon JOB-OR-REQUESTID | pending",
 		handler: async (args, ctx) => {
 			const [verb, jobId] = args.trim().split(/\s+/);
 			if (verb === "dead") { ctx.ui.notify(JSON.stringify(await layered.deadJobs()), "info"); return; }
+			if (verb === "pending") {
+				if (!resilient) throw new Error("Pending receipts exist only with a configured database");
+				ctx.ui.notify(JSON.stringify(await resilient.pendingReport()), "info");
+				return;
+			}
 			if (verb === "retry" || verb === "abandon") {
-				if (!jobId) throw new Error(`Specify the job id: /memory-maintain ${verb} <jobId>`);
-				ctx.ui.notify(JSON.stringify(await (verb === "retry" ? layered.retryJob(jobId) : layered.abandonJob(jobId))), "info");
+				if (!jobId) throw new Error(`Specify the job id or pending request id: /memory-maintain ${verb} <id>`);
+				// abandon falls through to pending dead letters when the id is not a dead enrichment job
+				const outcome = verb === "retry"
+					? await layered.retryJob(jobId)
+					: (await layered.abandonJob(jobId)) || (resilient ? await resilient.abandonPending(jobId) : false);
+				ctx.ui.notify(JSON.stringify(outcome), "info");
 				return;
 			}
 			const id = config.memory?.modelId;
