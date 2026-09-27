@@ -145,11 +145,12 @@ test("late successful output cannot revive a failed or cancelled attempt", () =>
 	assert.equal(recovery.succeed(next), false);
 	assert.equal(recovery.state.inFlight, false);
 });
-for (const kind of ["cancelled", "invalid", "context"]) {
-	test(`${kind} does not trigger fallback`, () => {
+for (const kind of ["cancelled", "invalid", "context", "budget_exhausted"]) {
+	test(`${kind} does not trigger fallback or mark the domain unhealthy`, () => {
 		const recovery = make();
 		assert.equal(recovery.fail(recovery.beginAttempt(), kind, 0), false);
 		assert.equal(recovery.state.active, "strong");
+		assert.deepEqual(recovery.state.health, []);
 	});
 }
 test("retry-after and backoff are honored by probe eligibility", () => {
@@ -229,14 +230,27 @@ test("user cancellation never starts a backup request", async () => {
 	assert.equal(calls, 1);
 	assert.equal(recovery.state.inFlight, false);
 });
-test("invalid configuration is rejected", () => {
+test("a sibling's traffic success in a shared health domain does not stall failback (m1rev-F001)", () => {
+	const mirror = { ...models[1], id: "mirror", model: "b2", costRank: 5 };
+	const shared = new HealthService();
+	const first = new ModelRecovery(models, "strong", requirements, defaults, shared);
+	first.fail(first.beginAttempt(), "transient", 0); // strong's domain is unhealthy; first is on backup
+	const sibling = new ModelRecovery([models[1], mirror], "mirror",
+		{ ...requirements, allowedIds: ["strong", "mirror"] }, defaults, shared);
+	assert.equal(sibling.succeed(sibling.beginAttempt()), true); // same-domain traffic success
+	assert.equal(first.state.active, "backup");
+	assert.equal(first.atBoundary(), true); // failback still reachable at the next safe boundary
+	assert.equal(first.state.active, "strong");
+});
+test("invalid configuration is rejected naming the offending field", () => {
 	assert.throws(() => make({ probeIntervalMs: 0 }));
 	assert.throws(() => make({ requiredProbeSuccesses: 0 }));
 	assert.throws(() => new ModelRecovery([...models, models[0]], "strong", requirements, defaults));
 	assert.throws(() => make().setPreferred("cheap", requirements));
-	assert.throws(() => new ModelRecovery([{ ...models[1], account: "" }], "strong", requirements, defaults));
-	assert.throws(() => new ModelRecovery([{ ...models[1], endpoint: "" }], "strong", requirements, defaults));
-	assert.throws(() => new ModelRecovery([{ ...models[1], billing: { inputPerMillionTokens: -1, outputPerMillionTokens: 2 } }], "strong", requirements, defaults));
+	assert.throws(() => new ModelRecovery([{ ...models[1], account: "" }], "strong", requirements, defaults), /account/);
+	assert.throws(() => new ModelRecovery([{ ...models[1], endpoint: "" }], "strong", requirements, defaults), /endpoint/);
+	assert.throws(() => new ModelRecovery([{ ...models[1], dataEgress: "" }], "strong", requirements, defaults), /dataEgress/);
+	assert.throws(() => new ModelRecovery([{ ...models[1], billing: { inputPerMillionTokens: -1, outputPerMillionTokens: 2 } }], "strong", requirements, defaults), /billing/);
 	assert.throws(() => new HealthService({ maxConcurrentProbes: 0 }));
 	assert.throws(() => new HealthService({ probeBudget: -1 }));
 });
