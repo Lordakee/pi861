@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { FileStateStore, ResilientBackend } from "../src/live/store.ts";
-import { ContextAssembler, LayeredMemory, emptyLayeredMemory } from "../src/live/layered-memory.ts";
+import { ContextAssembler, hostAssemblyTrigger, LayeredMemory, emptyLayeredMemory } from "../src/live/layered-memory.ts";
 import { LocalMemory } from "../src/memory.ts";
 const principal = { tenantId: "t", principalId: "a", readScopes: ["project:p"], writeScopes: ["project:p"] };
 const item = (id, full = "用户决定使用 PostgreSQL，记录来自验收会议。") => ({ id, scope: "project:p", kind: "project", status: "confirmed", full, abstract: full, overview: full, source: { kind: "user", ref: `event:${id}` } });
@@ -159,6 +159,15 @@ test("context assembly covers model change, compaction and node switch", async t
   assert.match(recalled.text, /PostgreSQL/);
   const empty = await assembler.recallEvents();
   assert.equal(empty.changes.length, 0); assert.equal(empty.hasMore, false);
+});
+
+// R6.3: host events map to assembly triggers; every non-resume start reason stays inert.
+test("host assembly trigger mapping covers resume and tree navigation without false positives", () => {
+  assert.equal(hostAssemblyTrigger({ type: "session_start", reason: "resume", previousSessionFile: "/old.jsonl" }), "session_resume");
+  assert.equal(hostAssemblyTrigger({ type: "session_tree", newLeafId: "n1", oldLeafId: null }), "node_change");
+  for (const reason of ["startup", "reload", "new", "fork"]) assert.equal(hostAssemblyTrigger({ type: "session_start", reason }), undefined);
+  assert.equal(hostAssemblyTrigger({ type: "session_shutdown", reason: "quit" }), undefined);
+  assert.equal(hostAssemblyTrigger(undefined), undefined);
 });
 
 // m3r-F008 regression: one record with several changes in a page used to be packed once per change.

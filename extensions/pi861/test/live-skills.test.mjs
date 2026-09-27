@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmSync, linkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { FileStateStore } from "../src/live/store.ts";
 import { SkillRepository, emptySkillState } from "../src/live/skill-repository.ts";
+import { controlledToolCapture } from "../src/memory.ts";
 import { McpClient } from "../src/live/mcp.ts";
 import { installCapabilities } from "../src/live/skills-host.ts";
 function setup(t) {
@@ -43,6 +44,49 @@ test("source changing during compilation rejects the stale candidate", async t =
 test("symbolic links are not traversed during Skill installation", async t => {
   const { repo, source } = setup(t); symlinkSync("/tmp", join(source, "outside"));
   await assert.rejects(repo.install(source, { id: "a", revision: "auto", group: "debug" }), /symlinks/);
+});
+// R4.7: a regular file with a second hard link must be rejected instead of archived.
+test("hard-linked files are rejected during Skill installation", async t => {
+  const { repo, source } = setup(t); writeFileSync(join(source, "shared.txt"), "hard-linked content");
+  try { linkSync(join(source, "shared.txt"), join(source, "alias.txt")); }
+  catch { return t.skip("platform does not support hard links"); }
+  await assert.rejects(repo.install(source, { id: "a", revision: "auto", group: "debug" }), /hard link/);
+  rmSync(join(source, "alias.txt"));
+  const restored = await repo.install(source, { id: "a", revision: "auto", group: "debug" });  // single-link file installs normally
+  assert.ok(restored.files.some(file => file.path === "shared.txt"));
+});
+
+// R6.7: controlled results persist under an explicit owner; reads re-check current authorization
+// so the reference id alone is never a bearer token.
+test("controlled results page for their owner and deny revoked or foreign identities (R6.7)", async t => {
+  const { repo } = setup(t);
+  const binding = { toolId: "local/lookup", accountId: "a", resourceId: "project:p", schemaHash: "h", phase: "execute" };
+  const ref = await repo.storeResult({ value: "x".repeat(20_000) }, { owner: "principal", tenantId: "t1", principalId: "main", roleId: "developer", toolName: "bash", toolCallId: "call-9" });
+  const reader = { tenantId: "t1", principalId: "main", role: { id: "developer", skillIds: [], grants: [] } };
+  const first = await repo.readResult(ref, reader);
+  assert.equal(first.complete, false);                    // paged, not whole
+  assert.ok(first.totalCharacters > 16_000);
+  const last = await repo.readResult(ref, reader, first.nextOffset);
+  assert.equal(last.complete, true);
+  await assert.rejects(repo.readResult(ref, { ...reader, principalId: "other" }), /not found/);   // other principal
+  await assert.rejects(repo.readResult(ref, { ...reader, role: { id: "reviewer", skillIds: [], grants: [] } }), /not found/);  // role switched/revoked
+  await assert.rejects(repo.readResult(ref, { role: reader.role }), /not found/);  // missing identity is not a bearer bypass
+  const skillRef = await repo.storeResult({ rows: 1 }, { owner: "skill", roleId: "developer", skillId: "debug", binding });
+  const role = { id: "developer", skillIds: ["debug"], grants: [{ toolId: binding.toolId, accountId: "a", resourceIds: ["project:p"] }] };
+  assert.match(JSON.stringify(await repo.readResult(skillRef, { role })), /rows/);
+  await assert.rejects(repo.readResult(skillRef, { role: { ...role, grants: [] } }), /not found/);      // grant revoked -> immediate deny
+  await assert.rejects(repo.readResult(skillRef, { role: { id: "developer", skillIds: [], grants: role.grants } }), /not found/);  // Skill revoked -> immediate deny
+});
+test("controlled tool capture persists raw output through the repository under the caller identity (R6.7)", async t => {
+  const { repo, directory } = setup(t);
+  const secret = 'api_key = "sk-abcdefghijklmnopqrstuvwxyz1234"';
+  const capture = await controlledToolCapture({ toolName: "bash", toolCallId: "call-3", content: JSON.stringify({ tool: "bash", result: `config: ${secret}`, isError: false }), id: "t3", scope: "project:p1",
+    saveRaw: raw => repo.storeResult(JSON.parse(raw), { owner: "principal", tenantId: "t1", principalId: "main", roleId: "dev", toolName: "bash", toolCallId: "call-3" }) });
+  assert.equal(capture.stored, "controlled");
+  assert.ok(!JSON.stringify(capture.item).includes(secret));  // the memory item stays digest-only
+  const reopened = new SkillRepository(new FileStateStore(join(directory, "skills.json"), emptySkillState()));  // persisted, not in-process
+  const page = await reopened.readResult(capture.reference.resultRef, { tenantId: "t1", principalId: "main", role: { id: "dev", skillIds: [], grants: [] } });
+  assert.match(page.text, /sk-abcde/);                      // the raw copy is readable only through the controlled store
 });
 test("Skill activation registers real MCP tools lazily and enforces current grants", async t => {
   const { repo } = setup(t);

@@ -29,6 +29,8 @@ export interface CapabilityOptions {
 	operations?: OperationJournal;
 	/** Deployment boundary (R5.11); defaults to trusted-local. */
 	deploymentMode?: DeploymentMode;
+	/** Runtime principal behind principal-owned controlled results (R6.7); Skill results authorize through the role alone. */
+	principal?: () => { tenantId: string; principalId: string };
 }
 function requireText(value: unknown): string { if (typeof value !== "string" || !value.trim()) throw new Error("Nonempty string required"); return value; }
 function array(value: unknown): string[] { if (!Array.isArray(value) || value.some((part) => typeof part !== "string")) throw new Error("String array required"); return value; }
@@ -119,7 +121,7 @@ export function installCapabilities(pi: CapabilityHost, options: CapabilityOptio
 					const serialized = JSON.stringify(response);
 					const maxBytes = options.maxResultBytes ?? 32_000;
 					if (Buffer.byteLength(serialized) > maxBytes) {
-				const reference = await options.repository.storeResult(response, { roleId: options.role().id, skillId: current.skillId, binding });
+				const reference = await options.repository.storeResult(response, { owner: "skill", roleId: options.role().id, skillId: current.skillId, binding });
 						return { content: [{ type: "text" as const, text: JSON.stringify({ resultRef: reference, bytes: Buffer.byteLength(serialized), complete: false, instruction: "Use pi861_capabilities action=result to read pages. Do not treat this as the full result." }) }], details: { reference } };
 					}
 					return { content: [{ type: "text" as const, text: serialized }], details: { toolId: binding.toolId }, isError: record(response)?.isError === true };
@@ -154,7 +156,7 @@ export function installCapabilities(pi: CapabilityHost, options: CapabilityOptio
 				const buffer = Buffer.from(file.base64, "base64"), offset = Number(args.offset ?? 0);
 				if (!Number.isSafeInteger(offset) || offset < 0 || offset > buffer.length) throw new Error("Invalid resource offset");
 				value = { path: file.path, content: buffer.subarray(offset, offset + 16_000).toString("utf8"), bytes: buffer.length, offset, nextOffset: Math.min(offset + 16_000, buffer.length), complete: offset + 16_000 >= buffer.length };
-			} else if (args.action === "result") value = await options.repository.readResult(requireText(args.resultRef), role, Number(args.offset ?? 0));
+			} else if (args.action === "result") value = await options.repository.readResult(requireText(args.resultRef), { role, ...options.principal?.() }, Number(args.offset ?? 0));
 			else throw new Error("Invalid capability action");
 			return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} };
 		},

@@ -313,6 +313,18 @@ export class LayeredMemory implements MemoryBackend {
 
 export type AssemblyTrigger = "session_start" | "session_resume" | "model_change" | "compaction" | "node_change";
 
+/**
+ * R6.3: maps host session events to assembly triggers. Only a session_start whose reason is
+ * "resume" restores; session_tree is branch navigation inside one host process, not a
+ * distributed node change (workers are separate task processes with no node-change event).
+ */
+export function hostAssemblyTrigger(event: unknown): AssemblyTrigger | undefined {
+	const parsed = record(event);
+	if (parsed?.type === "session_start") return parsed.reason === "resume" ? "session_resume" : undefined;
+	if (parsed?.type === "session_tree") return "node_change";
+	return undefined;
+}
+
 /** Event-driven context assembly for model switch, compaction and node change (R6.3), plus event-recall (R6.4). */
 export interface AssemblyOutcome {
 	trigger: AssemblyTrigger;

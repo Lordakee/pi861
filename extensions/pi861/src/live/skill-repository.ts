@@ -21,8 +21,17 @@ export interface SkillState {
 	format: 1; sources: SkillSource[]; activeSources: Record<string, string>;
 	candidates: SkillCandidate[]; versions: RuntimeSkill[]; active: Record<string, string>;
 	provenance?: Record<string, { group: string; sourceSet: string }>;
-	results?: Record<string, { text: string; roleId: string; skillId: string; binding: ToolBinding }>;
+	results?: Record<string, { text: string } & ResultOwner>;
 }
+/**
+ * Controlled-result owner (R6.7): a Skill tool call (role + Skill + binding) or, without
+ * Skill context, the configured runtime principal and role behind the tool call identity.
+ */
+export type ResultOwner =
+	| { owner: "skill"; roleId: string; skillId: string; binding: ToolBinding }
+	| { owner: "principal"; tenantId: string; principalId: string; roleId: string; toolName: string; toolCallId: string };
+/** Reading identity for controlled results: the live role plus, for principal-owned results, the runtime principal. */
+export interface ResultReader { role: Role; tenantId?: string; principalId?: string; }
 export function emptySkillState(): SkillState {
 	return { format: 1, sources: [], activeSources: {}, candidates: [], versions: [], active: {} };
 }
@@ -47,6 +56,7 @@ function collectFiles(root: string): SourceFile[] {
 			}
 		} else {
 			if (!stat.isFile() || stat.size > 2_097_152 || files.length >= 1000 || bytes + stat.size > 16_777_216) throw new Error("Skill archive exceeds limits or contains special files");
+			if (stat.nlink !== 1) throw new Error("Skill archives cannot contain hard links");
 			const content = readFileSync(path);
 			bytes += content.length;
 			files.push({ path: relative, base64: content.toString("base64"), bytes: content.length, sha256: createHash("sha256").update(content).digest("hex") });
@@ -270,7 +280,7 @@ export class SkillRepository {
 		const definitions = skill.branches.flatMap((branch) => branch.tools.map((tool) => ({ id: tool.toolId, schemaHash: tool.schemaHash })));
 		return rebuild(state).activate(role, id, revision, branches, phase, environment, definitions).tools;
 	}
-	async storeResult(value: unknown, owner: { roleId: string; skillId: string; binding: ToolBinding }): Promise<string> {
+	async storeResult(value: unknown, owner: ResultOwner): Promise<string> {
 		const text = JSON.stringify(value);
 		if (Buffer.byteLength(text) > 4_194_304) throw new Error("Tool artifact exceeds storage limit");
 		const id = digest({ value, owner });
@@ -280,12 +290,20 @@ export class SkillRepository {
 		});
 		return id;
 	}
-	async readResult(id: string, role: Role, offset = 0): Promise<unknown> {
+	async readResult(id: string, reader: ResultReader, offset = 0): Promise<unknown> {
 		const result = (await this.store.read()).results?.[id];
-		if (!result || result.roleId !== role.id || !role.skillIds.includes(result.skillId) ||
-			!role.grants.some((grant) => grant.toolId === result.binding.toolId && grant.accountId === result.binding.accountId && grant.resourceIds.includes(result.binding.resourceId))) throw new Error("Artifact not found");
+		// The reference id is not a bearer token: every read re-checks the reader's current
+		// authorization, so a revoked role, Skill or grant denies immediately (R5.8/R6.7).
+		if (!result || !this.authorizeResult(result, reader)) throw new Error("Artifact not found");
 		if (!Number.isSafeInteger(offset) || offset < 0 || offset > result.text.length) throw new Error("Invalid artifact offset");
 		return { text: result.text.slice(offset, offset + 16_000), offset, nextOffset: Math.min(result.text.length, offset + 16_000), totalCharacters: result.text.length, complete: offset + 16_000 >= result.text.length };
+	}
+	private authorizeResult(result: { text: string } & ResultOwner, reader: ResultReader): boolean {
+		if (result.owner === "skill") {
+			return result.roleId === reader.role.id && reader.role.skillIds.includes(result.skillId) &&
+				reader.role.grants.some((grant) => grant.toolId === result.binding.toolId && grant.accountId === result.binding.accountId && grant.resourceIds.includes(result.binding.resourceId));
+		}
+		return reader.tenantId === result.tenantId && reader.principalId === result.principalId && reader.role.id === result.roleId;
 	}
 
 	async resource(skillId: string, revision: string, sourceId: string, path: string, role: Role): Promise<SourceFile> {

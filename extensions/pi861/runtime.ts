@@ -17,7 +17,7 @@ import { HealthService, ModelFailure, type ModelTarget, type ModelUsage } from "
 import type { Role } from "./src/capabilities.ts";
 import { PostgresMemory, type SqlPool } from "./src/postgres.ts";
 import { FileStateStore, PostgresStateStore, ResilientBackend, type StateStore } from "./src/live/store.ts";
-import { ContextAssembler, LayeredMemory, emptyLayeredMemory, type AssemblyTrigger } from "./src/live/layered-memory.ts";
+import { ContextAssembler, hostAssemblyTrigger, LayeredMemory, emptyLayeredMemory, type AssemblyTrigger } from "./src/live/layered-memory.ts";
 import { SkillRepository, emptySkillState, type SkillSource } from "./src/live/skill-repository.ts";
 import { McpClient, type DeploymentMode, type McpServer } from "./src/live/mcp.ts";
 import { installCapabilities, type CapabilityHost, type ResourceRule } from "./src/live/skills-host.ts";
@@ -309,7 +309,7 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 	function generator(id: string): GenerateText {
 		return (prompt, signal) => auxiliaryService(id).generate(id, prompt, signal);
 	}
-	const initialize = async (_event: unknown, ctx: ExtensionContext): Promise<void> => {
+	const initialize = async (event: unknown, ctx: ExtensionContext): Promise<void> => {
 		context = ctx;
 		wakeController.abort();
 		wakeController = new AbortController();
@@ -344,6 +344,10 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 			const wrapper = ctx.modelRegistry.find("pi861-runtime", "managed");
 			if (wrapper && ctx.isIdle()) await pi.setModel(wrapper);
 		}
+		// R6.3: a resumed session and a local branch switch re-anchor fixed constraints and
+		// working state through the same assembly path as model change and compaction.
+		const trigger = hostAssemblyTrigger(event);
+		if (trigger) void injectMemoryContext(trigger);
 	};
 	pi.on("session_start", initialize);
 	pi.on("session_tree", initialize);
@@ -455,9 +459,15 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		const content = JSON.stringify({ tool: event.toolName, result: event.result, isError: event.isError });
 		const id = digest([ctx.sessionManager.getSessionId(), event.toolCallId]);
 		// Oversized or sensitive output becomes a controlled reference (digest + pointer) instead
-		// of being dropped; pending receipts from a database outage stay buffered, never lost.
+		// of being dropped; the raw copy persists in the repository under the runtime principal's
+		// ownership (R6.7) and reads re-check the current role. Pending receipts from a database
+		// outage stay buffered, never lost.
 		const capture = await controlledToolCapture({
 			toolName: event.toolName, toolCallId: event.toolCallId, content, id, scope, maxBytes: 64_000,
+			saveRaw: (raw) => repository.storeResult(JSON.parse(raw) as unknown, {
+				owner: "principal", tenantId: principal.tenantId, principalId: principal.principalId,
+				roleId: currentRole().id, toolName: event.toolName, toolCallId: event.toolCallId,
+			}),
 		});
 		await memory.put({ requestId: id, expectedRevision: null, item: capture.item });
 	});
@@ -608,6 +618,7 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 	}
 	const capabilities = installCapabilities(capabilityPort(pi), {
 		repository, role: currentRole, clients,
+		principal: () => principal,
 		environment: config.environment ?? [], resourceRules: config.resourceRules ?? [], operations,
 		deploymentMode: config.deploymentMode ?? "trusted-local",
 		baseTools: workerMode && !config.project?.allowWorkerShell
