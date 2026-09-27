@@ -11,6 +11,8 @@ export default defineConfig({
 		globals: true,
 		environment: "node",
 		testTimeout: 30000, // 30 seconds for API calls
+		// Cap file parallelism: timing-sensitive harness tests keep CPU headroom on small runners.
+		maxWorkers: 2,
 		reporters: process.env.GITHUB_ACTIONS ? ["dot", "github-actions"] : ["dot"],
 		silent: "passed-only",
 	},

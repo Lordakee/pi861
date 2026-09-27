@@ -7,7 +7,7 @@ import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { publishFileAtomically, publishJsonl } from "../../src/harness/session/jsonl/io.ts";
 import type { JsonlStorageHeader } from "../../src/harness/session/jsonl/types.ts";
 import { sessionName, setValue } from "../../src/harness/session/values.ts";
-import { err, FileError } from "../../src/harness/types.ts";
+import { err, FileError, ok } from "../../src/harness/types.ts";
 
 let root: string;
 let path: string;
@@ -104,5 +104,31 @@ describe("JSONL publication", () => {
 	it("publishes a header-only file when the callback emits no transactions", async () => {
 		await publishJsonl(fileSystem, path, header, BACKGROUND_CONTEXT, async () => {});
 		expect(await readFile(path, "utf8")).toBe(`${JSON.stringify(header)}\n`);
+	});
+
+	it("keeps the destination and removes the temp file when a snapshot append fails mid-stream", async () => {
+		await writeFile(path, "original");
+		const first = { ...setValue(sessionName, "first"), seq: 1 };
+		const second = { ...setValue(sessionName, "second"), seq: 2 };
+		const failure = new FileError("unknown", "injected I/O failure", path);
+		const append = vi.spyOn(fileSystem, "appendFile");
+		append.mockResolvedValueOnce(ok(undefined)); // header line
+		append.mockResolvedValueOnce(err(failure)); // first snapshot transaction
+
+		await expect(
+			publishJsonl(fileSystem, path, header, BACKGROUND_CONTEXT, async (appendTransaction) => {
+				await appendTransaction([first]);
+				await appendTransaction([second]);
+			}),
+		).rejects.toMatchObject({ cause: failure });
+
+		expect(await readFile(path, "utf8")).toBe("original");
+		await expect(readFile(`${path}.tmp`)).rejects.toMatchObject({ code: "ENOENT" });
+
+		// The retry succeeds once the injected failure is gone.
+		await publishJsonl(fileSystem, path, header, BACKGROUND_CONTEXT, async (appendTransaction) => {
+			await appendTransaction([first]);
+		});
+		expect(await readFile(path, "utf8")).toBe([JSON.stringify(header), JSON.stringify(first), ""].join("\n"));
 	});
 });

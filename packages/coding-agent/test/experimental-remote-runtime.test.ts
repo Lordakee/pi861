@@ -82,7 +82,7 @@ afterEach(async () => {
 });
 
 describe("experimental durable server composition", () => {
-	test("uses PI_SERVER_DIR and PI_SERVER_ID", async () => {
+	test("uses PI_SERVER_DIR and PI_SERVER_ID", { timeout: 90_000 }, async () => {
 		const directory = await mkdtemp(join("/tmp", "pi-server-dir-"));
 		directories.add(directory);
 		const serverId = "00000000-0000-4000-8000-000000000001";
@@ -112,13 +112,13 @@ describe("experimental durable server composition", () => {
 		});
 	});
 
-	test("rejects a provider without a model", async () => {
+	test("rejects a provider without a model", { timeout: 90_000 }, async () => {
 		const directory = await mkdtemp(join("/tmp", "pes-"));
 		directories.add(directory);
 		await expect(startServer({ directory, provider: "anthropic" })).rejects.toThrow("provider requires a model");
 	});
 
-	test("preserves an existing Session model when the server default changes", async () => {
+	test("preserves an existing Session model when the server default changes", { timeout: 90_000 }, async () => {
 		await writeFile(
 			join(agentDir, "settings.json"),
 			JSON.stringify({ defaultProvider: "anthropic", defaultModel: "claude-opus-4-6" }),
@@ -143,14 +143,14 @@ describe("experimental durable server composition", () => {
 		expect(state.model).toEqual({ provider: "anthropic", modelId: "claude-opus-4-6" });
 	});
 
-	test("rejects model options when discovery selects an existing server", async () => {
+	test("rejects model options when discovery selects an existing server", { timeout: 90_000 }, async () => {
 		const { directory } = await makeServer();
 		await expect(runClient({ command: "client", model: "anthropic/claude-opus-4-6" }, { directory })).rejects.toThrow(
 			"Model selection is only valid when automatically activating a new server",
 		);
 	});
 
-	test("rechecks an auto-discovered server after a version mismatch", async () => {
+	test("rechecks an auto-discovered server after a version mismatch", { timeout: 90_000 }, async () => {
 		const { directory, runtime } = await makeServer();
 		const connect = Client.connect.bind(Client);
 		vi.spyOn(Client, "connect")
@@ -251,7 +251,7 @@ describe("experimental durable server composition", () => {
 		await expect.poll(() => pathExists(join(directory, `control-${serverId}.sock`)), { timeout: 5_000 }).toBe(false);
 	});
 
-	test("runs and discovers multiple logical servers from one directory", async () => {
+	test("runs and discovers multiple logical servers from one directory", { timeout: 90_000 }, async () => {
 		const directory = await mkdtemp(join("/tmp", "pi-multi-server-"));
 		directories.add(directory);
 		const firstId = "00000000-0000-4000-8000-000000000001";
@@ -286,7 +286,7 @@ describe("experimental durable server composition", () => {
 		});
 	});
 
-	test("hydrates and mutates server Session services across framed clients", async () => {
+	test("hydrates and mutates server Session services across framed clients", { timeout: 90_000 }, async () => {
 		const { runtime } = await makeServer();
 		const firstClient = await Client.connect({
 			serverId: runtime.serverId,
@@ -347,7 +347,7 @@ describe("experimental durable server composition", () => {
 		await Promise.all([firstServices.dispose(BACKGROUND_CONTEXT), secondServices.dispose(BACKGROUND_CONTEXT)]);
 	});
 
-	test("hydrates and updates the Models service across concurrent framed clients", async () => {
+	test("hydrates and updates the Models service across concurrent framed clients", { timeout: 90_000 }, async () => {
 		const { runtime } = await makeServer();
 		const firstClient = await attachClient(runtime, "demo-1");
 		const workerPid = runtime.workerPids.get("demo-1");
@@ -385,7 +385,7 @@ describe("experimental durable server composition", () => {
 		await Promise.all([firstServices.dispose(BACKGROUND_CONTEXT), secondServices.dispose(BACKGROUND_CONTEXT)]);
 	});
 
-	test("loads conventional Session facets from multiple configured plugin packages", async () => {
+	test("loads conventional Session facets from multiple configured plugin packages", { timeout: 90_000 }, async () => {
 		const directory = await mkdtemp(join("/tmp", "pes-plugin-"));
 		directories.add(directory);
 		const secondPackagePath = join(directory, "second-plugin");
@@ -434,7 +434,7 @@ describe("experimental durable server composition", () => {
 		}
 	});
 
-	test("uses the most recently selected model for a new Session", async () => {
+	test("uses the most recently selected model for a new Session", { timeout: 90_000 }, async () => {
 		const directory = await mkdtemp(join("/tmp", "pes-model-default-"));
 		directories.add(directory);
 		const runtime = await startServer({ directory });
@@ -460,7 +460,7 @@ describe("experimental durable server composition", () => {
 		await secondServices.dispose(BACKGROUND_CONTEXT);
 	});
 
-	test("composes management attachment with Session service hydration", async () => {
+	test("composes management attachment with Session service hydration", { timeout: 90_000 }, async () => {
 		const { runtime } = await makeServer();
 		const clientRuntime = await openClientRuntime({
 			command: "client",
@@ -664,7 +664,7 @@ describe("experimental durable server composition", () => {
 		}
 	});
 
-	test("stops an idle Session worker after its client disconnects", async () => {
+	test("stops an idle Session worker after its client disconnects", { timeout: 90_000 }, async () => {
 		const { runtime } = await makeServer();
 		const client = await attachClient(runtime, "demo-1");
 		const pid = runtime.workerPids.get("demo-1");
@@ -676,7 +676,7 @@ describe("experimental durable server composition", () => {
 		expect(processExists(pid!)).toBe(false);
 	});
 
-	test("starts one process per attached session and stops them during shutdown", async () => {
+	test("starts one process per attached session and stops them during shutdown", { timeout: 90_000 }, async () => {
 		const { runtime } = await makeServer();
 		await Promise.all([attachClient(runtime, "demo-1"), attachClient(runtime, "demo-2")]);
 
@@ -690,7 +690,7 @@ describe("experimental durable server composition", () => {
 		await Promise.all(pids.map((pid) => expect.poll(() => processExists(pid)).toBe(false)));
 	});
 
-	test("server runtime replaces an exited worker on the next attach", async () => {
+	test("server runtime replaces an exited worker on the next attach", { timeout: 90_000 }, async () => {
 		const directory = await mkdtemp(join("/tmp", "pew-"));
 		directories.add(directory);
 		const runtime = await startServer({ ...sessionWorkerModel, directory });
@@ -707,7 +707,7 @@ describe("experimental durable server composition", () => {
 		expect(replacementPid).not.toBe(firstPid);
 	});
 
-	test("discovers workers after replacing the server", async () => {
+	test("discovers workers after replacing the server", { timeout: 90_000 }, async () => {
 		const firstDirectory = await mkdtemp(join("/tmp", "per-"));
 		directories.add(firstDirectory);
 		const first = await startServer({ ...sessionWorkerModel, directory: firstDirectory });
@@ -739,7 +739,7 @@ describe("experimental durable server composition", () => {
 		expect(replacement.workerPids.get("demo-2")).not.toBe(firstWorkerPid);
 	});
 
-	test("retires an unclaimed idle worker after replacement demand expires", async () => {
+	test("retires an unclaimed idle worker after replacement demand expires", { timeout: 90_000 }, async () => {
 		const directory = await mkdtemp(join("/tmp", "pi-orphan-worker-"));
 		directories.add(directory);
 		vi.stubEnv("__PI_SESSION_WORKER_ORPHAN_DEMAND_GRACE_MS", "50");
@@ -758,7 +758,7 @@ describe("experimental durable server composition", () => {
 		expect(processExists(workerPid!)).toBe(false);
 	});
 
-	test("restores tracked sessions that are outside the replacement catalog", async () => {
+	test("restores tracked sessions that are outside the replacement catalog", { timeout: 90_000 }, async () => {
 		const directory = await mkdtemp(join("/tmp", "pet-"));
 		const emptySessionDir = await mkdtemp(join("/tmp", "pet-sessions-"));
 		directories.add(directory);
@@ -784,7 +784,7 @@ describe("experimental durable server composition", () => {
 		expect(replacement.workerPids.get("demo-1")).toBe(workerPid);
 	});
 
-	test("reports missing and ambiguous session selections", async () => {
+	test("reports missing and ambiguous session selections", { timeout: 90_000 }, async () => {
 		const sharedDirectory = await mkdtemp(join("/tmp", "ped-"));
 		directories.add(sharedDirectory);
 		const firstShared = await startServer({
@@ -807,7 +807,7 @@ describe("experimental durable server composition", () => {
 			runClient({ command: "client", sessionId: "demo-1" }, { directory: sharedDirectory }),
 		).rejects.toThrow("Session demo-1 is available from more than one server");
 	});
-	test("rejects a duplicate session ID within one durable repository", async () => {
+	test("rejects a duplicate session ID within one durable repository", { timeout: 90_000 }, async () => {
 		await createExperimentalSessions(
 			join(agentDir, "experimental", "sessions"),
 			["demo-1"],

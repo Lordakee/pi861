@@ -46,3 +46,33 @@ registerConformance(
 		} satisfies StorageFixture;
 	}),
 );
+
+// The same shared storage semantics must hold when every deletion commit rewrites the file.
+registerConformance(
+	"JsonlStorage conformance (compaction always)",
+	createStorageConformance(async () => {
+		const fileSystem = new NodeExecutionEnv({ cwd: createTempDir() });
+		const storage = await JsonlStorage.create(
+			{
+				fileSystem,
+				path: "session.jsonl",
+				now: () => NOW,
+				compaction: { enabled: true, minBytes: 1, minDeadBytes: 1, deadRatio: 0 },
+			},
+			{
+				v: JSONL_FORMAT_VERSION,
+				kind: "header",
+				id: "session",
+				storageVersion: 1,
+				createdAt: NOW,
+				cwd: "/workspace",
+			},
+			[],
+			BACKGROUND_CONTEXT,
+		);
+		return {
+			storage,
+			[Symbol.asyncDispose]: () => storage.close(BACKGROUND_CONTEXT),
+		} satisfies StorageFixture;
+	}),
+);

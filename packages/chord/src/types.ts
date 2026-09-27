@@ -259,3 +259,100 @@ export interface LoadedFacets {
 export interface FacetLoader {
 	load(): Promise<LoadedFacets>;
 }
+
+export type RpcErrorCode =
+	| "rpc-malformed"
+	| "rpc-version-mismatch"
+	| "rpc-cancelled"
+	| "rpc-peer-disconnected"
+	| "rpc-handler-missing"
+	| "rpc-internal";
+
+/** Serializable sanitized error carried by RPC response envelopes. */
+export type RpcError = {
+	readonly code: RpcErrorCode;
+	readonly message: string;
+};
+
+export type RpcHelloEnvelope = {
+	readonly version: 1;
+	readonly type: "hello";
+	readonly metadata?: JsonValue;
+};
+
+export type RpcRequestEnvelope = {
+	readonly version: 1;
+	readonly type: "request";
+	readonly id: string;
+	readonly method: string;
+	readonly args: readonly JsonValue[];
+	readonly metadata?: JsonValue;
+};
+
+export type RpcResponseEnvelope = {
+	readonly version: 1;
+	readonly type: "response";
+	readonly id: string;
+	readonly result?: JsonValue;
+	readonly error?: RpcError;
+};
+
+export type RpcCancelEnvelope = {
+	readonly version: 1;
+	readonly type: "cancel";
+	readonly id: string;
+};
+
+export type RpcNotificationEnvelope = {
+	readonly version: 1;
+	readonly type: "notification";
+	readonly method: string;
+	readonly payload: JsonValue;
+};
+
+/** Versioned Chord RPC wire message. Application envelopes wrap or follow it; they never replace it. */
+export type RpcEnvelope =
+	| RpcHelloEnvelope
+	| RpcRequestEnvelope
+	| RpcResponseEnvelope
+	| RpcCancelEnvelope
+	| RpcNotificationEnvelope;
+
+/**
+ * Application-supplied duplex channel carrying already-decoded strict-JSON messages.
+ *
+ * Adapters own sockets, framing, reconnect, routing, authentication, and process ownership.
+ * Messages are received in send order and `send()` is awaitable for backpressure.
+ */
+export interface RpcChannel {
+	send(message: JsonValue): Promise<void>;
+	onMessage(listener: (message: unknown) => void): () => void;
+	onClose(listener: (reason?: unknown) => void): () => void;
+	close(reason?: unknown): Promise<void>;
+}
+
+// biome-ignore lint/suspicious/noConfusingVoidType: void is the intentional handler no-result form
+export type RpcHandler = (args: readonly JsonValue[], context: Context) => JsonValue | void | Promise<JsonValue | void>;
+
+export type RpcNotificationListener = (payload: JsonValue, context: Context) => void | Promise<void>;
+
+export interface RpcPeerOptions {
+	readonly channel: RpcChannel;
+	/** Inbound messages whose JSON encoding exceeds this byte length are rejected as protocol errors. */
+	readonly maxMessageBytes?: number;
+	/** Opaque strict-JSON metadata attached to the handshake and every request. */
+	readonly metadata?: JsonValue;
+	readonly onError?: (error: Error) => void;
+}
+/**
+ * One endpoint of a symmetric RPC channel. Either peer may register handlers, call methods,
+ * subscribe to ordered notifications, cancel calls, and close.
+ */
+export interface RpcPeer {
+	register(method: string, handler: RpcHandler): () => void;
+	call(method: string, args: readonly JsonValue[], context?: Context): Promise<JsonValue | undefined>;
+	subscribe(method: string, listener: RpcNotificationListener): () => void;
+	notify(method: string, payload: JsonValue): Promise<void>;
+	close(reason?: unknown): Promise<void>;
+	readonly closed: boolean;
+}

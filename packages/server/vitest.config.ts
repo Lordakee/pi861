@@ -11,6 +11,8 @@ export default defineConfig({
 	test: {
 		globals: true,
 		environment: "node",
+		// Cap file parallelism: socket-probing tests keep CPU headroom on small runners.
+		maxWorkers: 2,
 		reporters: process.env.GITHUB_ACTIONS ? ["dot", "github-actions"] : ["dot"],
 	},
 	resolve: {

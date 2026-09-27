@@ -9,6 +9,8 @@ import type {
 	LaneInfo,
 	OpenOperation,
 	Resources,
+	SessionSnapshot,
+	WatchHandle,
 } from "../agent-harness.ts";
 import { type CompactionSettings, DEFAULT_COMPACTION_SETTINGS } from "../compaction/compaction.ts";
 import { DEFAULT_RETRY_POLICY, validateCompactionSettings, validateRetryPolicy, validateToolNames } from "../config.ts";
@@ -23,7 +25,7 @@ import { branchTip, deleteValue, entryLabel, laneConfig, laneState, sessionName,
 import type { AgentHarnessStreamOptions, AgentHarnessTool } from "../types.ts";
 import { Lane } from "./lane.ts";
 import { readLaneStorage, restoreLaneState, restoreSession } from "./restore.ts";
-import { type Config, type LaneState, SliceNotImplemented } from "./types.ts";
+import type { Config, LaneState } from "./types.ts";
 
 /** Runtime implementation of AgentHarness. The harness manages lanes but is not itself a lane. */
 export class Harness<TContext extends object | undefined> implements AgentHarness<TContext> {
@@ -302,8 +304,59 @@ export class Harness<TContext extends object | undefined> implements AgentHarnes
 		);
 	}
 
-	async watchSession(_context: Context): Promise<never> {
-		throw new SliceNotImplemented("watchSession");
+	/**
+	 * Watch the session-wide lane inventory and fault state. The watcher is registered and the snapshot captured
+	 * inside one Session mutation job, so every lane publication is represented either in the snapshot or in the
+	 * delivered event stream — never both, never neither. Resnapshot re-enters the same capture path and marks the
+	 * event-bus boundary while the mutation line still holds the captured state.
+	 */
+	async watchSession(context: Context): Promise<WatchHandle<SessionSnapshot>> {
+		this.assertOpen();
+		return this.session.mutate(async () => {
+			this.assertOpen();
+			const watcher = this.events.watch<SessionSnapshot>(
+				{ lanes: [], faulted: false },
+				(event) => "lane" in event || event.type === "fault",
+				context,
+				(resnapshotContext, markBoundary) =>
+					this.session.mutate(async () => {
+						this.assertOpen();
+						const snapshot = this.captureSessionSnapshot();
+						markBoundary();
+						return snapshot;
+					}, resnapshotContext),
+			);
+			try {
+				watcher.snapshot = this.captureSessionSnapshot();
+				return watcher;
+			} catch (error) {
+				watcher.unsubscribe();
+				throw error;
+			}
+		}, context);
+	}
+
+	/** One lane-inventory and fault projection captured while the Session mutation line is held. */
+	private captureSessionSnapshot(): SessionSnapshot {
+		const lanes = [...this.lanesByName.values()]
+			.map((lane): LaneInfo => {
+				const operation = lane.state.operation;
+				return {
+					name: lane.name,
+					tipId: lane.state.tipId,
+					operation:
+						operation === null
+							? null
+							: {
+									id: operation.meta.operationId,
+									kind: operation.meta.intent.kind,
+									startedAt: operation.meta.startedAt,
+									status: operation.state.control.status === "cancel_requested" ? "aborting" : "open",
+								},
+				};
+			})
+			.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+		return { lanes, faulted: this.faultError !== undefined };
 	}
 
 	fault(cause: unknown, context: Context): Error {

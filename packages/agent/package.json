@@ -30,6 +30,10 @@
 			"types": "./dist/harness/runtime/reducer.d.ts",
 			"import": "./dist/harness/runtime/reducer.js"
 		},
+		"./harness/runtime/session-reducer": {
+			"types": "./dist/harness/runtime/session-reducer.d.ts",
+			"import": "./dist/harness/runtime/session-reducer.js"
+		},
 		"./harness/session": {
 			"types": "./dist/harness/session/index.d.ts",
 			"import": "./dist/harness/session/index.js"

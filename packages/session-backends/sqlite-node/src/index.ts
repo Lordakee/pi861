@@ -119,5 +119,7 @@ export function createNodeSqliteFactory(): SqliteDatabaseFactory {
 	};
 }
 
+// Standalone S3 search projection (service + sync target) over its own database.
+export * from "./search/index.ts";
 // Re-export the SQLite session backend and types so this package is a complete node-sqlite backend.
 export * from "./sqlite/index.ts";

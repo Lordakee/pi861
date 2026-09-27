@@ -43,7 +43,10 @@ import type {
 	OperationScope,
 	OperationState,
 	RunResult,
-	SearchQuery,
+	SearchEntryHit,
+	SearchEntryOptions,
+	SearchSessionQuery,
+	SearchSessionResult,
 	Session,
 	SessionCreateOptions,
 	SessionMetadata,
@@ -51,7 +54,6 @@ import type {
 	SessionMutator,
 	SessionReader,
 	SessionRepo,
-	SessionSearchHit,
 	SessionSearchService,
 	SessionSnapshot,
 	SessionStats,
@@ -382,9 +384,11 @@ it("covers storage, session, repository, search, and identity signatures", () =>
 		(options: SessionCreateOptions, context: Context) => Promise<Session>
 	>();
 	expectTypeOf<SessionSearchService["searchSessions"]>().toEqualTypeOf<
-		(query: SearchQuery) => Promise<SessionSearchHit[]>
+		(query: SearchSessionQuery) => Promise<SearchSessionResult[]>
 	>();
-	expectTypeOf<SessionSearchService["notify"]>().toEqualTypeOf<(sessionId: string) => void>();
+	expectTypeOf<SessionSearchService["searchEntries"]>().toEqualTypeOf<
+		((text: string, options?: SearchEntryOptions) => AsyncIterable<SearchEntryHit>) | undefined
+	>();
 });
 
 it("covers Part 5 results, events, hooks, snapshots, tools, and stream options", () => {
