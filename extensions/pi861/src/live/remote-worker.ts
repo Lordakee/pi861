@@ -11,7 +11,9 @@ import { PiRpcSession } from "./pi-rpc.ts";
 import { Workspaces, type Workspace, type CheckCommand } from "./workspace.ts";
 
 export interface CommitBundle { data: string; sha256: string; }
-export interface RemoteJobInput { id: string; task: TaskRecord; execution: ExecutionSpec; baseCommit: string; baseBundle: CommitBundle; }
+/** identity carries the goal/run scope so a reused taskId cannot collide across goals. */
+export interface RemoteJobIdentity { goal: string; run: string; }
+export interface RemoteJobInput { id: string; task: TaskRecord; execution: ExecutionSpec; baseCommit: string; baseBundle: CommitBundle; identity?: RemoteJobIdentity; }
 export interface RemoteCandidate { commit: string; bundle: CommitBundle; evidence: string[]; text: string; }
 interface RemoteJob { id: string; hash: string; state: "queued" | "running" | "done" | "failed" | "unknown"; result?: RemoteCandidate; }
 export interface RemoteJobs { jobs: RemoteJob[]; }
@@ -35,6 +37,7 @@ export class RemoteWorkerServer {
 	private readonly config: { token: string; identity: WorkerIdentity; workspaces: Workspaces; checks: CheckCommand[]; process: (workspace: Workspace, execution: ExecutionSpec) => ProcessSpec; maxConcurrent: number; timeoutMs?: number; waitForSettled?: boolean };
 	private readonly active = new Map<string, AbortController>();
 	private readonly running = new Set<Promise<void>>();
+	private readonly startedAt = Date.now();
 	private server: Server | undefined;
 	constructor(state: StateStore<RemoteJobs>, config: RemoteWorkerServer["config"]) {
 		if (config.token.length < 24 || config.maxConcurrent < 1) throw new Error("Strong bearer token and positive capacity required");
@@ -53,6 +56,7 @@ export class RemoteWorkerServer {
 	private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		if (!authorized(request.headers.authorization, this.config.token)) { reply(response, 401, { error: "Unauthorized" }); return; }
 		const path = new URL(request.url ?? "/", "http://localhost").pathname;
+		if (request.method === "GET" && path === "/status") { reply(response, 200, await this.status()); return; }
 		if (request.method === "GET" && path.startsWith("/jobs/")) {
 			const id = path.slice(6), job = (await this.state.read()).jobs.find((job) => job.id === id);
 			reply(response, job ? 200 : 404, job ? { id, state: job.state, result: job.result } : { error: "Not found" }); return;
@@ -65,6 +69,7 @@ export class RemoteWorkerServer {
 		if (!/^[a-f0-9]{64}$/.test(input.id) || !input.task?.lease || !Array.isArray(input.task.writeScopes) || !Array.isArray(input.task.acceptance) ||
 			!input.task.acceptance.length || !Array.isArray(input.task.capabilities) || input.task.capabilities.some((capability) => !this.config.identity.capabilities.includes(capability)) || typeof input.execution?.instructions !== "string" || input.execution.instructions.length > 100_000 ||
 			!this.config.identity.roleIds.includes(input.execution.roleId) || !this.config.identity.modelIds.includes(input.execution.modelId) ||
+			(input.identity !== undefined && (typeof input.identity.goal !== "string" || typeof input.identity.run !== "string" || input.identity.goal.length > 200 || input.identity.run.length > 200)) ||
 			!Array.isArray(input.execution.checkIds) || !input.execution.checkIds.length || input.execution.checkIds.some((id) => !this.config.checks.some((check) => check.id === id))) throw new Error("Unapproved task contract");
 		const hash = digest(input);
 		const accepted = await this.state.update((state) => {
@@ -86,7 +91,7 @@ export class RemoteWorkerServer {
 			await this.state.update((state) => { const job = state.jobs.find((job) => job.id === input.id); if (job) job.state = "running"; });
 			await this.config.workspaces.importCommit(input.baseBundle, input.baseCommit);
 			controller.signal.throwIfAborted();
-			const workspace = await this.config.workspaces.create(input.id, input.task.attempts, input.baseCommit);
+			const workspace = await this.config.workspaces.create(input.id, input.task.attempts, input.baseCommit, { goal: input.identity?.goal, run: input.identity?.run });
 			session = new PiRpcSession(this.config.process(workspace, { ...input.execution, writeScopes: input.task.writeScopes }), { waitForSettled: this.config.waitForSettled });
 			const result = await session.prompt(`Task: ${input.task.title}\n\n${input.execution.instructions}\nAllowed write scopes: ${JSON.stringify(input.task.writeScopes)}\nAcceptance: ${JSON.stringify(input.task.acceptance)}\nDo not deploy, change another worktree, commit, or create unmanaged descendants.`, controller.signal, this.config.timeoutMs ?? 600_000);
 			const paths = await this.config.workspaces.changed(workspace, input.task.writeScopes);
@@ -97,6 +102,17 @@ export class RemoteWorkerServer {
 			await this.state.update((state) => { const job = state.jobs.find((job) => job.id === input.id); if (job) { job.state = "done"; job.result = { commit, bundle, evidence, text: result.text.slice(0, 32_000) }; } });
 		} catch { await this.state.update((state) => { const job = state.jobs.find((job) => job.id === input.id); if (job) job.state = controller.signal.aborted ? "unknown" : "failed"; }); }
 		finally { session?.close(); }
+	}
+	/** Heartbeat/capacity announcement view used by the deployment entry and /status. */
+	async status(): Promise<{ identity: WorkerIdentity; capacity: { maxConcurrent: number; busy: number }; jobs: Record<string, number>; uptimeMs: number }> {
+		const jobs = (await this.state.read()).jobs;
+		const counts: Record<string, number> = {};
+		for (const job of jobs) counts[job.state] = (counts[job.state] ?? 0) + 1;
+		return {
+			identity: structuredClone(this.config.identity),
+			capacity: { maxConcurrent: this.config.maxConcurrent, busy: jobs.filter((job) => job.state === "running" || job.state === "queued").length },
+			jobs: counts, uptimeMs: Date.now() - this.startedAt,
+		};
 	}
 	async close(): Promise<void> {
 		for (const controller of this.active.values()) controller.abort();
@@ -123,8 +139,10 @@ export class RemoteWorkerClient {
 		finally { await reader.cancel().catch(() => {}); }
 		const parsed = record(JSON.parse(Buffer.concat(chunks).toString("utf8"))); if (!parsed) throw new Error("Invalid worker response"); return parsed;
 	}
+	/** Capacity and health announcement of the remote node. */
+	async status(): Promise<Record<string, unknown>> { return this.request("/status", "GET", null, AbortSignal.timeout(30_000)); }
 	async run(input: Omit<RemoteJobInput, "id">, signal: AbortSignal): Promise<RemoteCandidate> {
-		const id = digest({ lease: input.task.lease, execution: input.execution, baseCommit: input.baseCommit });
+		const id = digest({ identity: input.identity ?? null, lease: input.task.lease, execution: input.execution, baseCommit: input.baseCommit });
 		const cancel = (): void => { void this.request("/cancel", "POST", { id }, AbortSignal.timeout(5000)).catch(() => {}); };
 		signal.addEventListener("abort", cancel, { once: true });
 		try {

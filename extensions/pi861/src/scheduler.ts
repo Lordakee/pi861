@@ -27,7 +27,34 @@ export interface TaskRecord extends TaskSpec {
 	reason?: string;
 }
 export interface BoardSnapshot { version: number; tasks: TaskRecord[]; }
-export interface BoardOptions { maxConcurrent: number; maxAttempts: number; }
+export interface BoardOptions { maxConcurrent: number; maxAttempts: number; /** Separate review pool: submitted-but-unverified work stops occupying execution slots and is capped on its own (audit backpressure). */ reviewSlots?: number; }
+export type IdleReasonKind = "dependency" | "attempt-budget" | "scope-conflict" | "review-capacity" | "capability" | "blocked" | "no-work" | "plan-budget" | "paused";
+export interface ConcurrencyReason { kind: IdleReasonKind; detail: string; taskIds: string[]; }
+export interface ConcurrencyExplanation { executing: number; reviewing: number; slots: number; reasons: ConcurrencyReason[]; }
+/** Why concurrency is below capacity for a board snapshot and a set of worker capability views. */
+export function explainConcurrency(tasks: TaskRecord[], options: BoardOptions, workers: { id: string; capabilities: string[] }[]): ConcurrencyExplanation {
+	const executing = tasks.filter((task) => task.status === "running");
+	const reviewing = tasks.filter((task) => task.status === "review");
+	const reasons: ConcurrencyReason[] = [];
+	const blocked = tasks.filter((task) => task.status === "blocked");
+	if (blocked.length) reasons.push({ kind: "blocked", detail: `${blocked.length} blocked task(s) need reconciliation or a manual unblock`, taskIds: blocked.map((task) => task.id) });
+	if (options.reviewSlots !== undefined && reviewing.length >= options.reviewSlots) reasons.push({ kind: "review-capacity", detail: `review pool full (${reviewing.length}/${options.reviewSlots}); audit backlog applies backpressure`, taskIds: reviewing.map((task) => task.id) });
+	const done = new Set(tasks.filter((task) => task.status === "done").map((task) => task.id));
+	const waiting: string[] = [], exhausted: string[] = [], conflicting: string[] = [], unauthorized: string[] = [];
+	for (const task of tasks.filter((candidate) => candidate.status === "queued")) {
+		const unmet = task.dependsOn.filter((id) => !done.has(id));
+		if (unmet.length) { waiting.push(task.id); continue; }
+		if (task.attempts >= options.maxAttempts) { exhausted.push(task.id); continue; }
+		if (tasks.filter(busy).some((active) => scopesConflict(active.writeScopes, task.writeScopes))) { conflicting.push(task.id); continue; }
+		if (!workers.some((worker) => task.capabilities.every((capability) => worker.capabilities.includes(capability)))) unauthorized.push(task.id);
+	}
+	if (waiting.length) reasons.push({ kind: "dependency", detail: "queued tasks wait on unaccepted dependencies", taskIds: waiting });
+	if (exhausted.length) reasons.push({ kind: "attempt-budget", detail: `attempt budget exhausted (max ${options.maxAttempts})`, taskIds: exhausted });
+	if (conflicting.length) reasons.push({ kind: "scope-conflict", detail: "write scopes conflict with work still holding them", taskIds: conflicting });
+	if (unauthorized.length) reasons.push({ kind: "capability", detail: "no known worker has the required capabilities", taskIds: unauthorized });
+	if (!reasons.length && executing.length < options.maxConcurrent) reasons.push({ kind: "no-work", detail: "no queued work is claimable; waiting for a plan append or manual unblock", taskIds: [] });
+	return { executing: executing.length, reviewing: reviewing.length, slots: options.maxConcurrent, reasons };
+}
 
 /** Path reservations are coordination hints, not an OS sandbox. */
 export function normalizeScope(scope: string): string {
@@ -116,15 +143,18 @@ export class TaskBoard {
 			throw new Error("Invalid worker or lease");
 		}
 		const tasks = structuredClone(this.snapshot.tasks);
-		const running = tasks.filter(busy);
-		if (running.length >= this.options.maxConcurrent || running.some((task) => task.lease?.workerId === workerId)) {
+		const executing = tasks.filter((task) => task.status === "running");
+		const reviewing = tasks.filter((task) => task.status === "review");
+		const occupied = this.options.reviewSlots === undefined ? executing.length + reviewing.length : executing.length;
+		if (occupied >= this.options.maxConcurrent || tasks.filter(busy).some((task) => task.lease?.workerId === workerId) ||
+			(this.options.reviewSlots !== undefined && reviewing.length >= this.options.reviewSlots)) {
 			return undefined;
 		}
 		const done = new Set(tasks.filter((task) => task.status === "done").map((task) => task.id));
 		const ready = tasks.filter((task) => task.status === "queued" &&
 			task.attempts < this.options.maxAttempts && (allowedTaskIds === undefined || allowedTaskIds.includes(task.id)) && task.dependsOn.every((id) => done.has(id)) &&
 			task.capabilities.every((capability) => capabilities.includes(capability)) &&
-			!running.some((active) => scopesConflict(active.writeScopes, task.writeScopes)))
+			!tasks.filter(busy).some((active) => scopesConflict(active.writeScopes, task.writeScopes)))
 			.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.id.localeCompare(b.id));
 		const task = ready[0];
 		if (!task) return undefined;
@@ -171,6 +201,30 @@ export class TaskBoard {
 		delete task.lease;
 		delete task.leaseUntil;
 		this.commit(tasks);
+	}
+	/** Manual operator override: a blocked task becomes claimable again (attempt budget still applies). */
+	requeue(taskId: string): void {
+		const tasks = structuredClone(this.snapshot.tasks);
+		const task = tasks.find((candidate) => candidate.id === taskId);
+		if (!task) throw new Error(`Unknown task: ${taskId}`);
+		if (task.status !== "blocked") throw new Error("Only a blocked task can be requeued");
+		task.status = "queued";
+		delete task.reason;
+		delete task.lease;
+		delete task.leaseUntil;
+		this.commit(tasks);
+	}
+	/** Withdraw never-started tasks; used by rolling planning to adjust a plan. */
+	remove(taskIds: string[]): void {
+		if (!taskIds.length) return;
+		const ids = new Set(taskIds);
+		const tasks = structuredClone(this.snapshot.tasks);
+		for (const id of ids) {
+			const task = tasks.find((candidate) => candidate.id === id);
+			if (!task) throw new Error(`Unknown task: ${id}`);
+			if (task.status !== "queued") throw new Error(`Only queued tasks can be withdrawn: ${id}`);
+		}
+		this.commit(tasks.filter((task) => !ids.has(task.id)));
 	}
 	recoverExpired(now: number): number {
 		const tasks = structuredClone(this.snapshot.tasks);

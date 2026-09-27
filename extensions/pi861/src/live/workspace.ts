@@ -21,9 +21,10 @@ export class Workspaces {
 	async head(): Promise<string> {
 		return (await execute("git", ["rev-parse", "HEAD"], { cwd: this.repository })).stdout.trim();
 	}
-	async create(taskId: string, attempt: number, baseCommit: string): Promise<Workspace> {
+	/** Workspace identity is goal/run/task/attempt scoped: reusing a taskId in a later goal cannot collide. */
+	async create(taskId: string, attempt: number, baseCommit: string, identity?: { goal?: string; run?: string }): Promise<Workspace> {
 		if (!/^[a-f0-9]{40,64}$/.test(baseCommit) || !Number.isSafeInteger(attempt) || attempt < 1) throw new Error("Pinned commit and valid attempt required");
-		const id = digest([taskId, attempt]).slice(0, 24), path = join(this.root, id), branch = `pi861/task-${id}`;
+		const id = digest([identity?.goal ?? "", identity?.run ?? "", taskId, attempt]).slice(0, 24), path = join(this.root, id), branch = `pi861/task-${id}`;
 		if (existsSync(path)) throw new Error("Task workspace already exists; reconcile before reuse");
 		await execute("git", ["worktree", "add", "-b", branch, path, baseCommit], { cwd: this.repository, maxBuffer: 1_048_576 });
 		return { path, branch, baseCommit };
@@ -87,5 +88,17 @@ export class Workspaces {
 	async integrate(workspace: Workspace, commit: string, signal: AbortSignal): Promise<void> {
 		if (!/^[a-f0-9]{40,64}$/.test(commit)) throw new Error("Invalid candidate commit");
 		await execute("git", ["-c", "user.name=Pi861 Integrator", "-c", "user.email=pi861-integrator@localhost", "merge", "--no-ff", "--no-edit", commit], { cwd: workspace.path, signal, maxBuffer: 1_048_576 });
+	}
+	/** Lock files a still-running Git process may hold; integration lease takeover requires them gone. */
+	gitLocks(workspace: Workspace): string[] {
+		let gitDir = join(workspace.path, ".git");
+		if (existsSync(gitDir) && lstatSync(gitDir).isFile()) {
+			const pointer = readFileSync(gitDir, "utf8").trim();
+			if (!pointer.startsWith("gitdir:")) return [];
+			gitDir = pointer.slice("gitdir:".length).trim();
+		}
+		if (!existsSync(gitDir)) return [];
+		return ["index.lock", "config.lock", "HEAD.lock", "shallow.lock", "gc.pid"]
+			.map((name) => join(gitDir, name)).filter((path) => existsSync(path));
 	}
 }
