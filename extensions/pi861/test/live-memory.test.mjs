@@ -161,6 +161,83 @@ test("context assembly covers model change, compaction and node switch", async t
   assert.equal(empty.changes.length, 0); assert.equal(empty.hasMore, false);
 });
 
+// m3r-F008 regression: one record with several changes in a page used to be packed once per change.
+test("event recall packs each changed record once per page", async t => {
+  const { memory } = setup(t);
+  await memory.put({ requestId: "r1", expectedRevision: null, item: item("a") });
+  await memory.enrich({ modelId: "test", async extract() { return { abstract: "数据库选型", overview: "已记录的数据库选择：PostgreSQL。", facts: [] }; } }, { signal: new AbortController().signal });
+  const assembler = new ContextAssembler(memory, "project:p");
+  const recalled = await assembler.recallEvents();
+  assert.equal(recalled.changes.length, 2);              // the change feed keeps both events (write plus projection)
+  const packedIds = recalled.text.split("\n").filter(Boolean).map(line => JSON.parse(line).id);
+  assert.deepEqual(packedIds, ["a"]);                   // but the current view is packed once, not twice
+});
+
+// m3r-F006 regression: fixed assembly used to see only the first 100 records of a scope.
+test("fixed assembly pages past the first hundred records", async t => {
+  const { memory } = setup(t);
+  for (let index = 0; index < 150; index++) {
+    const full = `当前工作状态条目 ${index}`;
+    await memory.put({ requestId: `r${index}`, expectedRevision: null,
+      item: { ...item(`w${String(index).padStart(3, "0")}`, full), kind: "working" } });
+  }
+  const assembler = new ContextAssembler(memory, "project:p", { maxBytes: 2_000_000 });
+  const assembled = await assembler.assemble("session_start");
+  assert.equal(assembled.omitted, 0);
+  assert.equal(new Set(assembled.text.split("\n").map(line => JSON.parse(line).id)).size, 150);  // every fixed record reached the pack
+  const tight = new ContextAssembler(memory, "project:p", { maxBytes: 400 });
+  const trimmed = await tight.assemble("session_start");
+  assert.ok(trimmed.usedBytes <= 400); assert.ok(trimmed.omitted > 0);  // the byte budget still bounds the output
+});
+
+// m3r-F007 regression: a delegated backend without listing used to answer with a silent empty page.
+test("delegated authority without listing fails fast instead of hiding records", async t => {
+  const { store } = setup(t);
+  const memory = new LayeredMemory(store, principal, { items: {
+    async get() { return undefined; }, async search() { return []; },
+    async put() { throw new Error("unused"); }, async withdraw() { throw new Error("unused"); },
+  } });
+  await assert.rejects(memory.list("project:p"), /does not support listing/);
+});
+
+// m3r-F004 regression: items committed to the delegate while the control-state transaction never ran.
+test("reconcile rebuilds control state lost in the delegated-commit crash window", async t => {
+  const { store } = setup(t);
+  const authority = new LocalMemory(principal);
+  await authority.put({ requestId: "r1", expectedRevision: null, item: item("a") });
+  await authority.put({ requestId: "r2", expectedRevision: null, item: item("b") });
+  await authority.withdraw("w1", "project:p", "a", 1);
+  const memory = new LayeredMemory(store, principal, { items: authority });
+  assert.equal((await memory.delta()).changes.length, 0);  // the crash window left no control state
+  const healed = await memory.reconcile();
+  assert.equal(healed.addedChanges, 2);   // a@2 withdrawn plus b@1; the intermediate a@1 has no authority record anymore
+  assert.equal(healed.addedJobs, 1);      // an extraction job only for the live record
+  const rerun = await memory.reconcile();
+  assert.equal(rerun.addedChanges, 0); assert.equal(rerun.addedJobs, 0);  // re-running adds nothing
+  const state = await store.read();
+  assert.equal(state.jobs.length, 1); assert.equal(state.jobs[0].memoryId, "b"); assert.equal(state.jobs[0].state, "queued");
+  assert.deepEqual((await memory.delta()).changes.map(change => [change.id, change.revision, change.withdrawn]).sort(),
+    [["a", 2, true], ["b", 1, false]]);
+  const outcome = await memory.enrich({ modelId: "test", async extract() { return { abstract: "数据库选型", overview: "使用 PostgreSQL。", facts: [] }; } }, { signal: new AbortController().signal });
+  assert.equal(outcome.completed, 1);     // the healed job runs normally
+  const embedded = setup(t);
+  assert.deepEqual(await embedded.memory.reconcile(), { addedChanges: 0, addedJobs: 0 });  // embedded mode has nothing to reconcile
+});
+
+test("reconcile falls back to listing when the authority cannot export", async t => {
+  const { store } = setup(t);
+  const authority = new LocalMemory(principal);
+  const memory = new LayeredMemory(store, principal, { items: {
+    get: (scope, id) => authority.get(scope, id), search: (query, limit) => authority.search(query, limit),
+    put: write => authority.put(write), withdraw: (requestId, scope, id, revision) => authority.withdraw(requestId, scope, id, revision),
+    list: (scope, afterId, limit) => authority.list(scope, afterId, limit),  // listing only: no exportItems
+  } });
+  await authority.put({ requestId: "r1", expectedRevision: null, item: item("a") });
+  const healed = await memory.reconcile();
+  assert.equal(healed.addedChanges, 1); assert.equal(healed.addedJobs, 1);
+  assert.deepEqual(await memory.reconcile(), { addedChanges: 0, addedJobs: 0 });
+});
+
 test("layered memory delegates item authority and keeps only control state", async t => {
   const { dir, store } = setup(t);
   const authorityPath = join(dir, "authority.json");
@@ -196,6 +273,7 @@ test("unavailable database leaves explicitly uncommitted local records that flus
   assert.equal(receipt.state, "pending");
   const report = await buffer.pendingReport();
   assert.equal(report.count, 1); assert.equal(report.critical, 1); assert.equal(report.reasons[0], "connection refused");
+  assert.deepEqual(report.dead, []);
   await assert.rejects(buffer.assertCommitted("goal milestone"), /"goal milestone" paused/);
   // Restart with a working delegate; the queue itself survived the instance change.
   const live = new LocalMemory(principal);
@@ -207,4 +285,79 @@ test("unavailable database leaves explicitly uncommitted local records that flus
   await resumed.assertCommitted("goal milestone");               // the boundary gate opens again
   const replay = await resumed.flush();
   assert.equal(replay.committed, 0);
+});
+
+const queuedPut = (requestId, id, critical = false) => ({ kind: "put", queuedAt: 1, reason: "down", critical,
+  input: { requestId, expectedRevision: null, item: item(id) } });
+
+// m3r-F002 regression: two concurrent flush() calls used to consume the same head and silently drop the entries behind it.
+test("concurrent flush serializes so no queued operation is lost", async t => {
+  const { dir } = setup(t);
+  const pendingStore = new FileStateStore(join(dir, "pending.json"), { pending: [] });
+  const submitted = [];
+  let release; const gate = new Promise(resolve => { release = resolve; }); let holding = true;
+  const backend = {
+    async get() {}, async search() { return []; },
+    async put(input) {
+      submitted.push(input.requestId);
+      if (holding) { holding = false; await gate; }  // stall the first submission while the second flush is already waiting
+      return { requestId: input.requestId, state: "committed", id: input.item.id, scope: input.item.scope, revision: 1 };
+    },
+    async withdraw() { throw new Error("unused"); },
+  };
+  await pendingStore.update(state => { state.pending.push(queuedPut("op1", "a"), queuedPut("op2", "b")); });
+  const resilient = new ResilientBackend(backend, pendingStore);
+  const first = resilient.flush();   // enters put(op1) and stalls inside the backend
+  const second = resilient.flush();  // must queue behind the first, not re-read the same head
+  await new Promise(resolve => setImmediate(resolve));
+  release();
+  const outcomes = await Promise.all([first, second]);
+  const queue = (await pendingStore.read()).pending;
+  for (const requestId of ["op1", "op2"]) {                       // every queue item is committed or still queued
+    assert.ok(submitted.includes(requestId) || queue.some(entry => entry.input.requestId === requestId),
+      `${requestId} vanished from both the backend and the queue`);
+  }
+  assert.deepEqual(submitted.sort(), ["op1", "op2"]);            // each item reached the backend exactly once
+  assert.equal(queue.length, 0);
+  assert.deepEqual(outcomes.map(outcome => outcome.remaining), [0, 0]);
+});
+
+// m3r-F003 regression: a permanently conflicting head used to block every later queue entry forever.
+test("a poison head is dead-lettered instead of blocking the queue forever", async t => {
+  const { dir } = setup(t);
+  const pendingStore = new FileStateStore(join(dir, "pending.json"), { pending: [] });
+  const submitted = [];
+  const backend = {
+    async get() {}, async search() { return []; },
+    async put(input) {
+      submitted.push(input.requestId);
+      if (input.requestId === "poison") throw new Error("Memory revision conflict");  // DB recovered; the record moved on
+      return { requestId: input.requestId, state: "committed", id: input.item.id, scope: input.item.scope, revision: 1 };
+    },
+    async withdraw() { throw new Error("unused"); },
+  };
+  await pendingStore.update(state => { state.pending.push({ ...queuedPut("poison", "a"), critical: true }, queuedPut("tail", "b")); });
+  const resilient = new ResilientBackend(backend, pendingStore);
+  assert.deepEqual(await resilient.flush(), { committed: 0, remaining: 2 });  // attempt 1 fails, head stays queued
+  assert.deepEqual(await resilient.flush(), { committed: 0, remaining: 2 });  // attempt 2
+  const drained = await resilient.flush();                                    // attempt 3 crosses the threshold
+  assert.equal(drained.committed, 1);            // the entry behind the poison head still flushes
+  assert.equal(drained.remaining, 0);            // the live queue is empty again
+  assert.deepEqual(submitted.filter(id => id === "tail"), ["tail"]);
+  const report = await resilient.pendingReport();
+  assert.equal(report.count, 1); assert.equal(report.critical, 1);  // the dead letter stays visible and critical
+  assert.equal(report.dead.length, 1);
+  assert.equal(report.dead[0].requestId, "poison");
+  assert.equal(report.dead[0].kind, "put");
+  assert.equal(report.dead[0].id, "a");
+  assert.match(report.dead[0].reason, /revision conflict/);
+  assert.equal(report.dead[0].failures, 3);
+  // A dead critical record is still uncommitted: the checkpoint stays paused until a human decides.
+  await assert.rejects(resilient.assertCommitted("goal milestone"), /still uncommitted/);
+  assert.equal(await resilient.abandonPending("poison"), true);   // manual entry: drop the dead letter
+  assert.equal(await resilient.abandonPending("poison"), false);  // already gone
+  const cleared = await resilient.pendingReport();
+  assert.equal(cleared.count, 0); assert.equal(cleared.critical, 0); assert.deepEqual(cleared.dead, []);
+  await resilient.assertCommitted("goal milestone");              // the gate opens
+  assert.deepEqual(await resilient.flush(), { committed: 0, remaining: 0 });  // the queue keeps draining
 });

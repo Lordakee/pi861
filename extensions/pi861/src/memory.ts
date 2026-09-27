@@ -42,6 +42,8 @@ export interface MemoryBackend {
 	withdraw(requestId: string, scope: string, id: string, expectedRevision: number): Promise<MemoryReceipt>;
 	/** Key-ordered pagination including this scope; omitted by minimal adapters. */
 	list?(scope: string, afterId?: string, limit?: number): Promise<{ items: MemoryItem[]; nextId?: string }>;
+	/** Every item in read scopes including withdrawn ones; authority reconciliation and migration verification, not a general read path. */
+	exportItems?(): Promise<MemoryItem[]>;
 }
 export function canonical(value: unknown): string {
 	if (value === null) return "null";
@@ -203,6 +205,9 @@ export class LocalMemory implements MemoryBackend {
 			.sort((a, b) => a.id < b.id ? -1 : 1);
 		const items = available.slice(0, limit).map((item) => structuredClone(item));
 		return { items, ...(available.length > limit ? { nextId: items.at(-1)?.id } : {}) };
+	}
+	async exportItems(): Promise<MemoryItem[]> {
+		return this.state.items.filter((item) => this.principal.readScopes.includes(item.scope)).map((item) => structuredClone(item));
 	}
 }
 

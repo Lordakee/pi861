@@ -105,6 +105,14 @@ test("listing is key-ordered, paginated and scope-filtered", async () => {
 	assert.deepEqual((await store.list("project:other")).items, []);
 });
 
+test("exportItems returns every record in read scopes, withdrawn ones included", async () => {
+	const store = new LocalMemory(principal);
+	await store.put(write("r1", { id: "m1" }));
+	await store.put(write("r2", { id: "m2" }));
+	await store.withdraw("forget", "project:p1", "m1", 1);
+	assert.deepEqual((await store.exportItems()).map((item) => `${item.id}:${item.status}`), ["m1:withdrawn", "m2:confirmed"]);
+});
+
 test("normal tool results are captured inline, oversized ones only as controlled references", async () => {
 	const small = await controlledToolCapture({ toolName: "read", toolCallId: "call-1", content: "plain output", id: "t1", scope: "project:p1" });
 	assert.equal(small.stored, "inline");

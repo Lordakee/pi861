@@ -144,7 +144,8 @@ export class LayeredMemory implements MemoryBackend {
 	async list(scope: string, afterId = "", limit = 50): Promise<{ items: MemoryItem[]; nextId?: string }> {
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid page limit");
 		const state = await this.store.read();
-		if (this.items?.list) {
+		if (this.items) {
+			if (!this.items.list) throw new Error("Delegated memory backend does not support listing");
 			const page = await this.items.list(scope, afterId, limit);
 			return { items: page.items.map((item) => this.view(state, item)), ...(page.nextId ? { nextId: page.nextId } : {}) };
 		}
@@ -263,6 +264,50 @@ export class LayeredMemory implements MemoryBackend {
 			return true;
 		});
 	}
+	/**
+	 * Heals the delegated two-phase-commit crash window: a committed item whose control-state
+	 * transaction never ran. The items backend is the authority, so every current record is
+	 * re-integrated (change entry plus extraction job) exactly when its change is missing.
+	 * Idempotent: re-running adds nothing. Embedded mode is single-transaction and reconciles
+	 * to zero. The authority is enumerated through exportItems when available, otherwise live
+	 * list pages, which cannot see withdrawn records; intermediate revisions of a record are
+	 * not reconstructable without an event log and stay absent.
+	 */
+	async reconcile(): Promise<{ addedChanges: number; addedJobs: number }> {
+		if (!this.items) return { addedChanges: 0, addedJobs: 0 };
+		const authority = await this.authorityItems();
+		return this.store.update((state) => {
+			this.local(state);
+			const beforeChanges = state.changes.length, beforeJobs = state.jobs.length;
+			for (const item of authority) {
+				if (!this.principal.writeScopes.includes(item.scope)) continue;
+				this.integrate(state, item.scope, item.id, {
+					requestId: `reconcile:${item.scope}:${item.id}:${item.revision}`, state: "committed",
+					id: item.id, scope: item.scope, revision: item.revision,
+				}, item.status === "withdrawn", item.source);
+			}
+			return { addedChanges: state.changes.length - beforeChanges, addedJobs: state.jobs.length - beforeJobs };
+		});
+	}
+	private async authorityItems(): Promise<MemoryItem[]> {
+		const items = this.items;
+		if (!items) throw new Error("No item authority configured");
+		if (items.exportItems) return items.exportItems();
+		const list = items.list;
+		if (!list) throw new Error("Delegated memory backend supports neither exportItems nor listing; cannot reconcile");
+		const collected: MemoryItem[] = [];
+		for (const scope of this.principal.readScopes) {
+			let afterId = "";
+			// A cursor that stops advancing ends the walk instead of spinning.
+			while (true) {
+				const page = await list.call(items, scope, afterId, 100);
+				collected.push(...page.items);
+				if (!page.nextId || page.nextId === afterId) break;
+				afterId = page.nextId;
+			}
+		}
+		return collected;
+	}
 }
 
 
@@ -292,8 +337,15 @@ export class ContextAssembler {
 	get eventCursor(): number { return this.cursor; }
 	/** Fixed constraints and working state assemble directly; query matches fill the remaining budget. */
 	async assemble(trigger: AssemblyTrigger, query = ""): Promise<AssemblyOutcome> {
-		const listed = await this.memory.list(this.scope, "", 100);
-		const fixed = listed.items.filter((item) => item.status === "confirmed" && (item.kind === "constraint" || item.kind === "working"));
+		const fixed: MemoryItem[] = [];
+		let afterId = "";
+		// Fixed sets are usually small, but they are not capped at one page; the byte budget still bounds the packed output.
+		while (true) {
+			const page = await this.memory.list(this.scope, afterId, 100);
+			fixed.push(...page.items.filter((item) => item.status === "confirmed" && (item.kind === "constraint" || item.kind === "working")));
+			if (!page.nextId || !page.items.length || page.nextId === afterId) break;
+			afterId = page.nextId;
+		}
 		const found = query.trim() ? await this.memory.search(query, 12) : [];
 		const merged = [...new Map([...fixed, ...found].map((item) => [JSON.stringify([item.scope, item.id, item.revision]), item])).values()];
 		const pack = contextPack(merged, { level: this.level, maxBytes: this.maxBytes });
@@ -304,7 +356,9 @@ export class ContextAssembler {
 		const page = await this.memory.delta(this.cursor, 100);
 		const items = (await Promise.all(page.changes.map(async (change) => await this.memory.get(change.scope, change.id))))
 			.filter((item): item is MemoryItem => Boolean(item));
-		const pack = contextPack(items, { level: this.level, maxBytes: this.maxBytes });
+		// One record can carry several changes per page (write plus projection); pack its current view once.
+		const unique = [...new Map(items.map((item) => [JSON.stringify([item.scope, item.id]), item])).values()];
+		const pack = contextPack(unique, { level: this.level, maxBytes: this.maxBytes });
 		this.cursor = page.cursor;
 		return { changes: page.changes, cursor: page.cursor, hasMore: page.hasMore, ...pack };
 	}

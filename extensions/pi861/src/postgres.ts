@@ -162,7 +162,7 @@ export class PostgresMemory implements MemoryBackend {
 			return { items, ...(result.rows.length > limit ? { nextId: items.at(-1)?.id } : {}) };
 		});
 	}
-	/** All items in read scopes including withdrawn ones; migration verification only, not a general read path. */
+	/** All items in read scopes including withdrawn ones; authority reconciliation and migration verification, not a general read path. */
 	async exportItems(): Promise<MemoryItem[]> {
 		return this.transaction(async (connection) => {
 			const result = await connection.query(

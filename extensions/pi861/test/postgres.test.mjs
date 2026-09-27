@@ -264,3 +264,22 @@ test("migration refuses unexplainable tombstones instead of copying them silentl
 	);
 	assert.equal((await fileStore.read()).memory.items.length, 1); // nothing was cut over
 });
+
+// m3r-F004 regression: control state lost while the PostgreSQL authority already committed.
+test("reconcile rebuilds control state from the PostgreSQL item authority, withdrawn included", async t => {
+	const dir = mkdtempSync(join(tmpdir(), "pi861-reconcile-")); t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const fileStore = new FileStateStore(join(dir, "memory.json"), emptyLayeredMemory("tenant1"));
+	const authority = new PostgresMemory(memoryTables().pool, principal);
+	// Items committed directly to the authority; the control-state transaction after them never ran.
+	await authority.put(input);
+	await authority.put({ ...input, requestId: "request2", item: { ...input.item, id: "fact2" } });
+	await authority.withdraw("w1", "project:p1", "fact1", 1);
+	const memory = new LayeredMemory(fileStore, principal, { items: authority });
+	assert.equal((await memory.delta()).changes.length, 0);
+	const healed = await memory.reconcile();
+	assert.equal(healed.addedChanges, 2);   // fact1@2 withdrawn plus fact2@1
+	assert.equal(healed.addedJobs, 1);      // an extraction job only for the live record
+	assert.deepEqual(await memory.reconcile(), { addedChanges: 0, addedJobs: 0 });  // re-running adds nothing
+	assert.deepEqual((await memory.delta()).changes.map(change => [change.id, change.revision, change.withdrawn]).sort(),
+		[["fact1", 2, true], ["fact2", 1, false]]);
+});

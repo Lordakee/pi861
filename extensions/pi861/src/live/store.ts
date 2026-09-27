@@ -92,9 +92,16 @@ export class PostgresStateStore<T> implements StateStore<T> {
 	}
 }
 
+export interface DeadLetterState { reason: string; at: number }
 export type PendingMemoryOperation =
-	| { kind: "put"; queuedAt: number; reason: string; critical: boolean; input: MemoryWrite }
-	| { kind: "withdraw"; queuedAt: number; reason: string; critical: boolean; requestId: string; scope: string; id: string; expectedRevision: number };
+	| { kind: "put"; queuedAt: number; reason: string; critical: boolean; input: MemoryWrite; failures?: number; dead?: DeadLetterState }
+	| { kind: "withdraw"; queuedAt: number; reason: string; critical: boolean; requestId: string; scope: string; id: string; expectedRevision: number; failures?: number; dead?: DeadLetterState };
+
+/** A terminally failed queue entry parked for a human decision; visible through pendingReport() and removable with abandonPending(). */
+export interface PendingDeadLetter {
+	requestId: string; kind: "put" | "withdraw"; scope: string; id: string;
+	critical: boolean; queuedAt: number; failures: number; reason: string; deadAt: number;
+}
 
 /**
  * Database-unavailable buffer: failed writes become explicitly uncommitted local records
@@ -105,9 +112,15 @@ export type PendingMemoryOperation =
 export class ResilientBackend implements MemoryBackend {
 	private readonly backend: MemoryBackend;
 	private readonly store: StateStore<{ pending: PendingMemoryOperation[] }>;
-	constructor(backend: MemoryBackend, store: StateStore<{ pending: PendingMemoryOperation[] }>) {
+	private readonly deadLetterAfter: number;
+	private flushChain: Promise<unknown> = Promise.resolve();
+	constructor(backend: MemoryBackend, store: StateStore<{ pending: PendingMemoryOperation[] }>, options: { deadLetterAfter?: number } = {}) {
 		this.backend = backend;
 		this.store = store;
+		this.deadLetterAfter = options.deadLetterAfter ?? 3;
+		if (!Number.isSafeInteger(this.deadLetterAfter) || this.deadLetterAfter < 1 || this.deadLetterAfter > 100) {
+			throw new Error("Invalid dead-letter threshold");
+		}
 	}
 	private queue(operation: PendingMemoryOperation): Promise<void> {
 		return this.store.update((state) => { state.pending.push(operation); });
@@ -140,29 +153,76 @@ export class ResilientBackend implements MemoryBackend {
 		if (!this.backend.list) throw new Error("Buffered backend does not support listing");
 		return this.backend.list(scope, afterId, limit);
 	}
-	/** Replays queued operations oldest-first with their original requestIds; stops at the first failure. */
+	/**
+	 * Replays queued operations oldest-first with their original requestIds, so an ambiguous
+	 * commit confirms rather than duplicates. Serialized per instance: concurrent callers queue
+	 * up instead of both consuming the same head and dropping the entries behind it. A head that
+	 * keeps failing crosses deadLetterAfter and is parked as a dead letter (pendingReport lists
+	 * it) instead of blocking every later entry.
+	 */
 	async flush(): Promise<{ committed: number; remaining: number }> {
+		const run = this.flushChain.then(() => this.flushOnce(), () => this.flushOnce());
+		this.flushChain = run.catch(() => {});
+		return run;
+	}
+	private async flushOnce(): Promise<{ committed: number; remaining: number }> {
 		let committed = 0;
 		while (true) {
-			const head = (await this.store.read()).pending[0];
+			const head = (await this.store.read()).pending.find((entry) => !entry.dead);
 			if (!head) break;
 			try {
 				if (head.kind === "put") await this.backend.put(head.input);
 				else await this.backend.withdraw(head.requestId, head.scope, head.id, head.expectedRevision);
-			} catch { break; }
-			await this.store.update((state) => { state.pending.shift(); });
+			} catch (error) {
+				if (!(await this.recordFailure(head, error))) break; // still under the threshold: retry on a later flush
+				continue; // freshly dead-lettered: the rest of the queue still drains now
+			}
+			await this.store.update((state) => {
+				const index = state.pending.findIndex((entry) => sameOperation(entry, head));
+				if (index >= 0) state.pending.splice(index, 1);
+			});
 			committed++;
 		}
-		return { committed, remaining: (await this.store.read()).pending.length };
+		const pending = (await this.store.read()).pending;
+		return { committed, remaining: pending.filter((entry) => !entry.dead).length };
 	}
-	async pendingReport(): Promise<{ count: number; critical: number; oldestQueuedAt: number | undefined; reasons: string[] }> {
+	/** Counts one flush failure for the entry and parks it as a dead letter once the threshold is crossed. */
+	private async recordFailure(head: PendingMemoryOperation, error: unknown): Promise<boolean> {
+		const failures = (head.failures ?? 0) + 1;
+		const dead = failures >= this.deadLetterAfter;
+		await this.store.update((state) => {
+			const entry = state.pending.find((candidate) => sameOperation(candidate, head));
+			if (!entry) return;
+			entry.failures = failures;
+			if (dead && !entry.dead) entry.dead = { reason: reasonOf(error), at: Date.now() };
+		});
+		return dead;
+	}
+	async pendingReport(): Promise<{ count: number; critical: number; oldestQueuedAt: number | undefined; reasons: string[]; dead: PendingDeadLetter[] }> {
 		const pending = (await this.store.read()).pending;
 		return {
 			count: pending.length,
 			critical: pending.filter((entry) => entry.critical).length,
 			oldestQueuedAt: pending[0]?.queuedAt,
 			reasons: [...new Set(pending.map((entry) => entry.reason))],
+			dead: pending.flatMap((entry) => entry.dead ? [{
+				requestId: requestIdOf(entry), kind: entry.kind,
+				scope: entry.kind === "put" ? entry.input.item.scope : entry.scope,
+				id: entry.kind === "put" ? entry.input.item.id : entry.id,
+				critical: entry.critical, queuedAt: entry.queuedAt, failures: entry.failures ?? 0,
+				reason: entry.dead.reason, deadAt: entry.dead.at,
+			}] : []),
 		};
+	}
+	/** Manual dead-letter entry: drops a terminally failed operation after human review. Live entries stay queued. */
+	async abandonPending(requestId: string): Promise<boolean> {
+		if (!requestId) throw new Error("Request id required");
+		return this.store.update((state) => {
+			const index = state.pending.findIndex((entry) => requestIdOf(entry) === requestId && entry.dead);
+			if (index < 0) return false;
+			state.pending.splice(index, 1);
+			return true;
+		});
 	}
 	/** Execution-boundary gate: critical records that are not committed yet pause the named checkpoint. */
 	async assertCommitted(boundary: string): Promise<void> {
@@ -175,4 +235,10 @@ export class ResilientBackend implements MemoryBackend {
 
 function reasonOf(error: unknown): string {
 	return (error instanceof Error ? error.message : String(error)).slice(0, 300);
+}
+function requestIdOf(entry: PendingMemoryOperation): string {
+	return entry.kind === "put" ? entry.input.requestId : entry.requestId;
+}
+function sameOperation(left: PendingMemoryOperation, right: PendingMemoryOperation): boolean {
+	return left.kind === right.kind && requestIdOf(left) === requestIdOf(right);
 }
