@@ -1,12 +1,44 @@
+import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { record } from "../search.ts";
 import { LineProcess, type ProcessSpec } from "./line-process.ts";
 
+/** Per-turn usage of an out-of-process Pi run. Missing values stay null, never zero. */
+export interface TurnUsage {
+	inputTokens: number | null;
+	outputTokens: number | null;
+	cacheReadTokens: number | null;
+	cacheWriteTokens: number | null;
+	cost: number | null;
+}
+/** One observed turn of one prompt run, keyed by its per-prompt runId and ordinal. */
+export interface TurnUsageRecord {
+	runId: string;
+	ordinal: number;
+	usage: TurnUsage;
+}
 export interface PiRunResult {
 	text: string;
 	messages: Record<string, unknown>[];
 	toolCalls: number;
 	usage: { input: number; output: number };
+	/** Per-turn usage, read only from the first assistant message_end of each turn. */
+	turns: TurnUsageRecord[];
+	/** Identity of this prompt run; every turn record carries it. */
+	runId: string;
+}
+const knownCount = (value: unknown): number | null =>
+	typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+function turnUsage(message: Record<string, unknown>): TurnUsage {
+	const usage = record(message.usage);
+	const cost = record(usage?.cost);
+	return {
+		inputTokens: knownCount(usage?.input),
+		outputTokens: knownCount(usage?.output),
+		cacheReadTokens: knownCount(usage?.cacheRead),
+		cacheWriteTokens: knownCount(usage?.cacheWrite),
+		cost: knownCount(cost?.total),
+	};
 }
 export class PiRpcSession {
 	private readonly process: LineProcess;
@@ -25,7 +57,15 @@ export class PiRpcSession {
 		if (this.running) throw new Error("Pi session already has a running prompt");
 		this.running = true;
 		const effective = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
-		const result: PiRunResult = { text: "", messages: [], toolCalls: 0, usage: { input: 0, output: 0 } };
+		const result: PiRunResult = {
+			text: "",
+			messages: [],
+			toolCalls: 0,
+			usage: { input: 0, output: 0 },
+			turns: [],
+			runId: randomUUID(),
+		};
+		let turnOrdinal = 0;
 		let resolve!: (result: PiRunResult) => void, reject!: (error: Error) => void;
 		const finished = new Promise<PiRunResult>((res, rej) => {
 			resolve = res;
@@ -37,14 +77,20 @@ export class PiRpcSession {
 			if (event.type === "process_error")
 				reject(new Error("Pi worker exited; reconcile previously dispatched tools"));
 			if (event.type === "tool_execution_start") result.toolCalls++;
+			if (event.type === "turn_start") turnOrdinal++;
 			if (event.type === "message_end") {
 				const current = record(event.message);
 				if (!current) return;
 				result.messages.push(current);
 				if (current.role === "assistant") {
-					const usage = record(current.usage);
-					result.usage.input += Number(usage?.input ?? 0);
-					result.usage.output += Number(usage?.output ?? 0);
+					// Turn usage is read only from the first assistant message_end of a turn:
+					// turn_end repeats the same response and duplicate events must not double-count.
+					if (turnOrdinal >= 1 && !result.turns.some((turn) => turn.ordinal === turnOrdinal)) {
+						const usage = turnUsage(current);
+						result.turns.push({ runId: result.runId, ordinal: turnOrdinal, usage });
+						result.usage.input += usage.inputTokens ?? 0;
+						result.usage.output += usage.outputTokens ?? 0;
+					}
 					result.text = (Array.isArray(current.content) ? current.content : [])
 						.map(record)
 						.filter((block) => block?.type === "text")

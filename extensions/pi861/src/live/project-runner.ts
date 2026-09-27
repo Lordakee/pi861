@@ -173,7 +173,14 @@ export class ProjectRunner {
 					identity,
 				);
 				workspace.baseCommit = baseCommit; // Revalidate the complete remote diff, not only its claimed output.
-				result = { text: candidate.text, messages: [], toolCalls: 0, usage: { input: 0, output: 0 } };
+				result = {
+					text: candidate.text,
+					messages: [],
+					toolCalls: 0,
+					usage: { input: 0, output: 0 },
+					turns: [], // the remote handoff carries no per-turn records
+					runId: `remote:${candidate.commit}`,
+				};
 				commit = candidate.commit;
 			} else {
 				workspace = await this.options.workspaces.create(task.id, task.attempts, baseCommit, identity);

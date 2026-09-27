@@ -1063,7 +1063,8 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 					}
 					const base = await workspaces.head();
 					// Read-only Pi planner inspects real source files; its tools exclude shell and writes.
-					// The planner is an out-of-process model consumer: reserve budget and meter it before it runs.
+					// The planner is an out-of-process model consumer: admission reserves one budget
+				// slot per goal input before it runs; observed turns settle actual usage afterwards.
 					const planner = target(project.plannerModelId);
 					await auxiliaryService(planner.id).meterExternal("planner", digest(["planner", input]), planner.id);
 					const plannerSession = new PiRpcSession({
@@ -1088,12 +1089,23 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 					});
 					let facts: string;
 					try {
-						facts = (
-							await plannerSession.prompt(
-								`Inspect relevant existing source files for this requested goal. Do not modify anything. Report actual architecture, reusable modules and interface boundaries, with paths. Goal: ${input}`,
-								wakeController.signal,
-							)
-						).text;
+						const observed = await plannerSession.prompt(
+							`Inspect relevant existing source files for this requested goal. Do not modify anything. Report actual architecture, reusable modules and interface boundaries, with paths. Goal: ${input}`,
+							wakeController.signal,
+						);
+						facts = observed.text;
+						// Honest boundary: per-turn metering is post-hoc. The RPC turn event arrives after
+						// the provider already served that request, so it cannot block the next turn, and
+						// observed turn responses are at most the real provider request count (internal
+						// retries and compaction stay invisible).
+						for (const turn of observed.turns)
+							await auxiliaryService(planner.id).meterExternalTurn(
+								"planner",
+								turn.runId,
+								turn.ordinal,
+								planner.id,
+								turn.usage,
+							);
 					} finally {
 						await plannerSession.close();
 					}

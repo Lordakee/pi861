@@ -159,6 +159,11 @@ test("AX10 goal e2e: /goal plans, two real worker subprocesses execute, skills a
 		const calls = (await readFile(join(root, "calls.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
 		assert.ok(calls.some((c) => c.marker.startsWith("Inspect relevant existing source files")), "planner inspection never ran");
 		assert.ok(calls.some((c) => c.marker.startsWith("Plan only the authorized project objective")), "plan generation never ran");
+		const usageState = await readJson(join(state, "usage.json"));
+		// Honest boundary: these are observed planner turns (<= real provider requests), metered post-hoc.
+		assert.ok(usageState.kinds["auxiliary:planner"]?.requests >= 1, "planner turns must be metered per turn");
+		assert.equal(typeof usageState.kinds["auxiliary:planner"]?.inputTokens, "number", "planner turns report known fixture usage");
+		assert.ok(Object.keys(usageState.receipts ?? {}).length >= 1, "planner receipts must persist");
 		const workerCalls = calls.filter((c) => /^Task: /.test(c.marker));
 		assert.ok(workerCalls.some((c) => c.marker.startsWith("Task: A")) && workerCalls.some((c) => c.marker.startsWith("Task: B")));
 		assert.ok(new Set(workerCalls.map((c) => c.pid)).size >= 2, "two distinct worker subprocesses must serve the tasks");

@@ -118,6 +118,15 @@ interface UsageBucket {
 export interface UsageLedgerState {
 	kinds: Record<string, UsageBucket>;
 	targets: Record<string, UsageBucket>;
+	/** Deduplicated out-of-process receipts keyed by caller-provided digests. */
+	receipts?: Record<string, UsageReceipt>;
+}
+/** One metered external request; an unknown-usage record is upgraded in place when known usage arrives. */
+export interface UsageReceipt {
+	targetId: string;
+	label: string;
+	usage: ModelUsage;
+	cost: number | null;
 }
 export interface UsageTotals {
 	requests: number;
@@ -148,24 +157,8 @@ export class UsageLedger {
 		this.store = store;
 	}
 	async record(target: ModelTarget, kind: UsageKind, usage: ModelUsage, label: string = kind): Promise<void> {
-		if (
-			!target.id ||
-			!["main", "probe", "auxiliary"].includes(kind) ||
-			(usage.inputTokens !== null && (!Number.isFinite(usage.inputTokens) || usage.inputTokens < 0)) ||
-			(usage.outputTokens !== null && (!Number.isFinite(usage.outputTokens) || usage.outputTokens < 0)) ||
-			(usage.cacheReadTokens !== null && (!Number.isFinite(usage.cacheReadTokens) || usage.cacheReadTokens < 0)) ||
-			(usage.cacheWriteTokens !== null &&
-				(!Number.isFinite(usage.cacheWriteTokens) || usage.cacheWriteTokens < 0)) ||
-			(usage.cost !== null && (!Number.isFinite(usage.cost) || usage.cost < 0))
-		)
-			throw new Error("Invalid usage report");
+		UsageLedger.validateReport(target, kind, usage);
 		const cost = estimateCost(target, usage);
-		const unknown =
-			usage.inputTokens === null ||
-			usage.outputTokens === null ||
-			usage.cacheReadTokens === null ||
-			usage.cacheWriteTokens === null ||
-			cost === null;
 		await this.store.update((state) => {
 			state.kinds ??= {};
 			state.targets ??= {};
@@ -175,14 +168,42 @@ export class UsageLedger {
 			] as const) {
 				const bucket = group[id] ?? emptyBucket();
 				bucket.requests++;
-				if (usage.inputTokens !== null) bucket.inputTokens += usage.inputTokens;
-				if (usage.outputTokens !== null) bucket.outputTokens += usage.outputTokens;
-				if (usage.cacheReadTokens !== null) bucket.cacheReadTokens += usage.cacheReadTokens;
-				if (usage.cacheWriteTokens !== null) bucket.cacheWriteTokens += usage.cacheWriteTokens;
-				if (cost !== null) bucket.cost += cost;
-				if (unknown) bucket.unknownReports++;
+				UsageLedger.apply(bucket, usage, cost, 1);
 				group[id] = bucket;
 			}
+		});
+	}
+	/** Records one out-of-process request under a dedup receipt key. Recording with
+	 * unknown usage counts the request immediately and keeps unknown fields visibly
+	 * unknown; a later record with known usage updates the SAME entry in place instead
+	 * of adding another. Once an entry is fully known it is final: further records for
+	 * the same key are no-ops, so duplicate events never count twice. */
+	async recordExternal(
+		receiptKey: string,
+		target: ModelTarget,
+		usage: ModelUsage,
+		label: string,
+	): Promise<void> {
+		if (!receiptKey) throw new Error("Invalid usage receipt key");
+		UsageLedger.validateReport(target, "auxiliary", usage);
+		const cost = estimateCost(target, usage);
+		await this.store.update((state) => {
+			state.receipts ??= {};
+			const prior = state.receipts[receiptKey];
+			if (prior && !UsageLedger.incomplete(prior.usage, prior.cost)) return;
+			state.kinds ??= {};
+			state.targets ??= {};
+			for (const [group, id] of [
+				[state.kinds, label],
+				[state.targets, target.id],
+			] as const) {
+				const bucket = group[id] ?? emptyBucket();
+				if (!prior) bucket.requests++;
+				else UsageLedger.apply(bucket, prior.usage, prior.cost, -1);
+				UsageLedger.apply(bucket, usage, cost, 1);
+				group[id] = bucket;
+			}
+			state.receipts[receiptKey] = { targetId: target.id, label, usage, cost };
 		});
 	}
 	async summary(): Promise<UsageTotals> {
@@ -197,6 +218,36 @@ export class UsageLedger {
 		for (const [id, bucket] of Object.entries(state.targets ?? {}))
 			result[`target:${id}`] = UsageLedger.totals([bucket]);
 		return result;
+	}
+	private static validateReport(target: ModelTarget, kind: UsageKind, usage: ModelUsage): void {
+		if (
+			!target.id ||
+			!["main", "probe", "auxiliary"].includes(kind) ||
+			(usage.inputTokens !== null && (!Number.isFinite(usage.inputTokens) || usage.inputTokens < 0)) ||
+			(usage.outputTokens !== null && (!Number.isFinite(usage.outputTokens) || usage.outputTokens < 0)) ||
+			(usage.cacheReadTokens !== null && (!Number.isFinite(usage.cacheReadTokens) || usage.cacheReadTokens < 0)) ||
+			(usage.cacheWriteTokens !== null &&
+				(!Number.isFinite(usage.cacheWriteTokens) || usage.cacheWriteTokens < 0)) ||
+			(usage.cost !== null && (!Number.isFinite(usage.cost) || usage.cost < 0))
+		)
+			throw new Error("Invalid usage report");
+	}
+	private static incomplete(usage: ModelUsage, cost: number | null): boolean {
+		return (
+			usage.inputTokens === null ||
+			usage.outputTokens === null ||
+			usage.cacheReadTokens === null ||
+			usage.cacheWriteTokens === null ||
+			cost === null
+		);
+	}
+	private static apply(bucket: UsageBucket, usage: ModelUsage, cost: number | null, sign: 1 | -1): void {
+		if (usage.inputTokens !== null) bucket.inputTokens += sign * usage.inputTokens;
+		if (usage.outputTokens !== null) bucket.outputTokens += sign * usage.outputTokens;
+		if (usage.cacheReadTokens !== null) bucket.cacheReadTokens += sign * usage.cacheReadTokens;
+		if (usage.cacheWriteTokens !== null) bucket.cacheWriteTokens += sign * usage.cacheWriteTokens;
+		if (cost !== null) bucket.cost += sign * cost;
+		if (UsageLedger.incomplete(usage, cost)) bucket.unknownReports += sign;
 	}
 	private static totals(buckets: UsageBucket[]): UsageTotals {
 		const total = emptyBucket();
@@ -646,13 +697,35 @@ export class AuxiliaryModelService {
 		);
 		return result.text;
 	}
-	/** Accounts an out-of-process model consumer (for example the read-only Pi planner session): reserve plus unknown usage. */
+	/** Out-of-process admission (for example the read-only Pi planner session): reserves one
+	 * request slot under the caller's intent, idempotently. It is the enforceable gate only;
+	 * actual usage is settled per observed turn by meterExternalTurn. */
 	async meterExternal(kind: string, intent: string, targetId: string): Promise<void> {
 		const target = this.config.targets.find((entry) => entry.id === targetId);
-		if (!target) throw new Error("Unknown external model target");
+		if (!target || !kind || !intent) throw new Error("Unknown external model target");
 		await this.services.budget?.reserve(intent);
+	}
+	/** Post-hoc per-turn settlement for an out-of-process consumer, deduplicated by
+	 * runId + turn ordinal + target. Honest boundary: the turn event arrives after the
+	 * provider already served the request, so this reservation cannot block the next
+	 * turn, and observed turn responses are at most the real provider request count
+	 * (internal retries and compaction stay invisible). Unknown usage stays visibly
+	 * unknown; a later settlement with known usage updates the same receipt. */
+	async meterExternalTurn(
+		kind: string,
+		runId: string,
+		turnOrdinal: number,
+		targetId: string,
+		usage: ModelUsage,
+	): Promise<void> {
+		const target = this.config.targets.find((entry) => entry.id === targetId);
+		if (!target) throw new Error("Unknown external model target");
+		if (!kind || !runId || !Number.isSafeInteger(turnOrdinal) || turnOrdinal < 1)
+			throw new Error("Invalid external turn receipt");
+		const key = digest(["external", kind, runId, turnOrdinal, targetId]);
+		await this.services.budget?.reserve(key);
 		if (this.services.ledger)
-			await this.services.ledger.record(target, "auxiliary", UNKNOWN_USAGE, `auxiliary:${kind}`);
+			await this.services.ledger.recordExternal(key, target, usage, `auxiliary:${kind}`);
 	}
 }
 

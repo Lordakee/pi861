@@ -154,19 +154,43 @@ test("auxiliary calls stop when the global budget is exhausted",async()=>{
  await assert.rejects(aux.generate("intake","prompt",signal()),/Model request failed/);
  assert.equal(budgetStore.state.used,1);
 });
-test("external planner sessions are reserved and metered with unknown usage",async()=>{
+test("external planner metering: admission reserves once, per-turn receipts dedupe and upgrade in place",async()=>{
+ // Honest boundary: per-turn metering is post-hoc — it cannot block the next turn, and
+ // observed turn responses are at most the real provider request count.
  const budgetStore=memstore({limit:10,used:0,intents:{}});
  const ledgerStore=memstore({kinds:{},targets:{}});
  const aux=new AuxiliaryModelService({targets,preferred:"cheap",requirements:policy().requirements,
   recovery:{failoverEnabled:true,failbackEnabled:false,probeIntervalMs:20,maxProbeIntervalMs:100,requiredProbeSuccesses:2},maxAttempts:3,requestTimeoutMs:500},
   async()=>({text:"",usage:usage(0,0)}),
   {budget:new RequestBudget(budgetStore.store),ledger:new UsageLedger(ledgerStore.store)});
- await aux.meterExternal("planner","goal-1","strong");
+ const unknown={inputTokens:null,outputTokens:null,cacheReadTokens:null,cacheWriteTokens:null,cost:null};
+ await aux.meterExternal("planner","goal-1","strong"); // admission: budget slot only
  assert.equal(budgetStore.state.used,1);
- const breakdown=await new UsageLedger(ledgerStore.store).breakdown();
- assert.equal(breakdown["kind:auxiliary:planner"].requests,1);
- assert.equal(breakdown["kind:auxiliary:planner"].inputTokens,"unknown");
- assert.equal(breakdown["kind:auxiliary:planner"].cost,"unknown");
+ await aux.meterExternalTurn("planner","run-1",1,"strong",unknown); // turn 1 without usage
+ await aux.meterExternalTurn("planner","run-1",1,"strong",unknown); // duplicate event: same receipt
+ await aux.meterExternalTurn("planner","run-1",2,"strong",usage(7,3)); // turn 2 settles known
+ await aux.meterExternalTurn("planner","run-1",1,"strong",usage(10,5,2)); // later known usage upgrades turn 1
+ assert.equal(budgetStore.state.used,3); // admission + two turn receipts, never more
+ let breakdown=await new UsageLedger(ledgerStore.store).breakdown();
+ assert.equal(breakdown["kind:auxiliary:planner"].requests,2);
+ assert.equal(breakdown["kind:auxiliary:planner"].inputTokens,17);
+ assert.equal(breakdown["kind:auxiliary:planner"].unknownReports,0);
+ assert.equal(breakdown["kind:auxiliary:planner"].cost,(39+66)/1_000_000);
+ assert.equal(Object.keys(ledgerStore.state.receipts).length,2); // receipts persist for dedup
+ await aux.meterExternalTurn("planner","run-1",1,"strong",usage(99,99)); // a final receipt never counts again
+ breakdown=await new UsageLedger(ledgerStore.store).breakdown();
+ assert.equal(breakdown["kind:auxiliary:planner"].requests,2);
+ assert.equal(breakdown["kind:auxiliary:planner"].inputTokens,17);
+ await assert.rejects(aux.meterExternalTurn("planner","run-1",0,"strong",unknown),/Invalid external turn receipt/);
+ await assert.rejects(aux.meterExternalTurn("planner","run-1",1,"ghost",unknown),/Unknown external model target/);
+});
+test("external planner metering fails when the post-hoc budget is already exhausted",async()=>{
+ const budgetStore=memstore({limit:1,used:1,intents:{}});
+ const aux=new AuxiliaryModelService({targets,preferred:"cheap",requirements:policy().requirements,
+  recovery:{failoverEnabled:true,failbackEnabled:false,probeIntervalMs:20,maxProbeIntervalMs:100,requiredProbeSuccesses:2},maxAttempts:3,requestTimeoutMs:500},
+  async()=>({text:"",usage:usage(0,0)}),
+  {budget:new RequestBudget(budgetStore.store)});
+ await assert.rejects(aux.meterExternalTurn("planner","run-1",1,"cheap",{inputTokens:1,outputTokens:1,cacheReadTokens:0,cacheWriteTokens:0,cost:null}),/budget exhausted/);
 });
 test("local budget exhaustion neither fails over nor pollutes shared health (m1rev-F004)",async()=>{
  const shared=new HealthService();const seen=[];
