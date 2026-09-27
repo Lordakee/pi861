@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { digest } from "../memory.ts";
 import {
+	type Attempt,
 	type ExecutionMode,
 	eligible,
 	estimateCost,
@@ -257,6 +258,7 @@ export class ModelRuntime<TContext, TResponse> {
 	private readonly classify: RouteClassifier | undefined;
 	private readonly infer: (
 		target: ModelTarget,
+		attempt: Attempt,
 		context: TContext,
 		signal: AbortSignal,
 		hooks: TransportHooks,
@@ -266,7 +268,13 @@ export class ModelRuntime<TContext, TResponse> {
 	private readonly services: RuntimeServices<TResponse>;
 	constructor(
 		policy: ModelPolicy,
-		infer: (target: ModelTarget, context: TContext, signal: AbortSignal) => Promise<TResponse>,
+		infer: (
+			target: ModelTarget,
+			attempt: Attempt,
+			context: TContext,
+			signal: AbortSignal,
+			hooks: TransportHooks,
+		) => Promise<TResponse>,
 		probe: (target: ModelTarget, signal: AbortSignal) => Promise<boolean>,
 		classifier?: RouteClassifier,
 		save: (state: ModelRuntimeState, checkpoint: ModelCheckpoint) => void = () => {},
@@ -489,7 +497,7 @@ export class ModelRuntime<TContext, TResponse> {
 					this.requests++;
 					this.persist();
 					try {
-						const result = await this.infer(target, context, requestSignal, hooks);
+						const result = await this.infer(target, attempt, context, requestSignal, hooks);
 						if (this.services.ledger)
 							await this.services.ledger
 								.record(target, "main", this.services.usageOf ? this.services.usageOf(result) : UNKNOWN_USAGE)
@@ -557,6 +565,7 @@ export interface AuxiliaryModelConfig {
 }
 export type AuxiliaryTransport = (
 	target: ModelTarget,
+	attempt: Attempt,
 	prompt: string,
 	signal: AbortSignal,
 	hooks: TransportHooks,
@@ -614,7 +623,7 @@ export class AuxiliaryModelService {
 					digest(["auxiliary", this.instanceSalt, kind, prompt, attempt.generation, attempt.configId]),
 				);
 				try {
-					const outcome = await this.infer(target, prompt, requestSignal, hooks);
+					const outcome = await this.infer(target, attempt, prompt, requestSignal, hooks);
 					if (this.services.ledger)
 						await this.services.ledger
 							.record(target, "auxiliary", outcome.usage, `auxiliary:${kind}`)

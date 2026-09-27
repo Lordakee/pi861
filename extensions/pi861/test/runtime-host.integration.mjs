@@ -33,6 +33,9 @@ test("real Pi runtime: buffered failover, native file tool, durable memory and s
  const entries=await session.command("get_entries",{},signal);const routing=entries.entries.filter(e=>e.customType==="pi861.model-runtime.v2");assert.ok(routing.some(e=>e.data.active==="strong"&&e.data.preferred==="cheap"));
  const routed=await session.prompt("fixture-route: report the completed verified phase through pi861_model_route",signal);
  assert.equal(routed.toolCalls,1,"fixture-route prompt must exercise pi861_model_route exactly once");
+ const usageState=JSON.parse(await readFile(join(state,"usage.json"),"utf8"));
+ assert.ok(usageState.kinds.main.requests>=3,"every streamed attempt must be metered");
+ assert.equal(typeof usageState.kinds.main.inputTokens,"number","streamed attempts report known usage");
  const afterRoute=await session.command("get_entries",{},signal);
  const evidence=afterRoute.entries.flatMap(e=>e.customType==="pi861.model-runtime.v2"?(e.data.evidence??[]):[]);
  assert.ok(evidence.some(ev=>ev.signal==="phase_complete"&&ev.phase==="p1"&&ev.verificationPassed===true&&ev.reason.includes("fixture phase finished")),"pi861_model_route phase and verification fields must reach the runtime evidence");

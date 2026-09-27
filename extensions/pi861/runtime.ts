@@ -29,6 +29,7 @@ import {
 	projectGoalCommand,
 	type WorkerIdentity,
 } from "./src/live/coordinator.ts";
+import type { TransportHooks } from "./src/live/deadline.ts";
 import {
 	type AssemblyTrigger,
 	ContextAssembler,
@@ -52,6 +53,7 @@ import { OperationJournal } from "./src/live/operations.ts";
 import { PiRpcSession } from "./src/live/pi-rpc.ts";
 import { ProjectRunner } from "./src/live/project-runner.ts";
 import { RemoteWorkerClient } from "./src/live/remote-worker.ts";
+import { StreamAttempt } from "./src/live/stream-adapter.ts";
 import { emptySkillState, SkillRepository, type SkillSource } from "./src/live/skill-repository.ts";
 import { type CapabilityHost, installCapabilities, type ResourceRule } from "./src/live/skills-host.ts";
 import { FileStateStore, PostgresStateStore, ResilientBackend, type StateStore } from "./src/live/store.ts";
@@ -59,7 +61,7 @@ import { guardWorkerTool } from "./src/live/worker-guard.ts";
 import { type CheckCommand, type Workspace, Workspaces } from "./src/live/workspace.ts";
 import { controlledToolCapture, digest, type MemoryBackend, resolveMemorySettings } from "./src/memory.ts";
 import { PostgresMemory, type SqlPool } from "./src/postgres.ts";
-import { HealthService, ModelFailure, type ModelTarget, type ModelUsage } from "./src/routing.ts";
+import { type Attempt, HealthService, ModelFailure, type ModelTarget, type ModelUsage } from "./src/routing.ts";
 import { record } from "./src/search.ts";
 import { readWebPage, webReadOptionsFromEnv } from "./src/web-read.ts";
 
@@ -377,10 +379,12 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 	}
 	async function direct(
 		selected: ModelTarget,
+		attempt: Attempt,
 		transcript: Context,
 		signal: AbortSignal,
 		maxTokens = 4096,
 		requestOptions?: ModelsSimpleStreamOptions,
+		hooks?: TransportHooks,
 	): Promise<AssistantMessage> {
 		if (!context) throw new Error("Pi context is not initialized");
 		const model = context.modelRegistry.find(selected.provider, selected.model);
@@ -391,6 +395,10 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		// Admission and metering are owned by the callers (ModelRuntime services or the
 		// auxiliary service); reserving here too would double-count every request.
 		let status = 200;
+		// Streaming attempt adapter: increments are attributed to this recovery attempt,
+		// connection/progress hooks fire per event, tool arguments are gated at
+		// toolcall_end, and dispatch still happens only at the successful-response boundary.
+		const adapter = new StreamAttempt<AssistantMessage>(attempt, hooks);
 		const stream = context.modelRegistry.streamSimple(model, transcript, {
 			...requestOptions,
 			signal,
@@ -400,24 +408,30 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 				await requestOptions?.onResponse?.(response, requestModel);
 			},
 		});
-		let terminal: AssistantMessage | undefined;
-		for await (const event of stream) {
-			if (event.type === "done") terminal = event.message;
-			if (event.type === "error") terminal = event.error;
+		try {
+			for await (const event of stream) if (adapter.ingest(event)) break;
+		} catch (error) {
+			adapter.invalidate();
+			throw error;
 		}
-		if (!terminal) throw new ModelFailure("transient");
-		if (terminal.stopReason === "error" || terminal.stopReason === "aborted") throw failure(terminal, status);
-		signal.throwIfAborted();
-		return terminal;
+		try {
+			return adapter.finish(signal, (message) => failure(message, status));
+		} catch (error) {
+			adapter.invalidate();
+			throw error;
+		}
 	}
 	// Auxiliary calls (classification, extraction, compilation, planning) run under the same
 	// recovery machine, request budget and usage ledger as main execution.
-	const auxiliaryTransport: AuxiliaryTransport = async (selected, prompt, signal) => {
+	const auxiliaryTransport: AuxiliaryTransport = async (selected, attempt, prompt, signal, hooks) => {
 		const message = await direct(
 			selected,
+			attempt,
 			{ messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
 			signal,
 			8192,
+			undefined,
+			hooks,
 		);
 		return { text: bodyText(message), usage: usageOf(message) };
 	};
@@ -465,17 +479,25 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 						},
 					}
 				: config.models;
-			modelRuntime = new ModelRuntime<
-				{ transcript: Context; options?: ModelsSimpleStreamOptions },
-				AssistantMessage
-			>(
+			modelRuntime = new ModelRuntime<{ transcript: Context; options?: ModelsSimpleStreamOptions }, AssistantMessage>(
 				policy,
-				(model, request, signal) =>
-					direct(model, request.transcript, signal, policy.maxOutputTokens ?? 8192, request.options),
+				(model, attempt, request, signal, hooks) =>
+					direct(
+						model,
+						attempt,
+						request.transcript,
+						signal,
+						policy.maxOutputTokens ?? 8192,
+						request.options,
+						hooks,
+					),
 				async (model, signal) =>
 					bodyText(
 						await direct(
 							model,
+							// Health probes have no recovery attempt identity; the synthetic attempt
+							// still gives the probe's per-call buffer stream validation.
+							{ generation: 0, configId: model.id, configRevision: model.revision },
 							{
 								messages: [
 									{

@@ -570,7 +570,10 @@ export class IncrementBuffer {
 	private owner: Attempt | undefined;
 	private text = "";
 	private readonly pendingTools = new Map<string, { args: string; complete: boolean }>();
+	/** Tombstone generation: attempts at or below it never regain ownership. */
+	private voidedGeneration = 0;
 	private current(attempt: Attempt): boolean {
+		if (attempt.generation <= this.voidedGeneration) return false;
 		if (this.owner === undefined) {
 			this.owner = { ...attempt };
 			return true;
@@ -619,6 +622,16 @@ export class IncrementBuffer {
 		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
 			return { dispatchable: false, error: "tool arguments must be a JSON object" };
 		return { dispatchable: true, args: parsed as Record<string, unknown> };
+	}
+	/** Voids an attempt: its late increments are refused even before a newer generation
+	 * adopts the buffer, and the buffered text and pending tool arguments are released. */
+	invalidate(attempt: Attempt): void {
+		if (this.current(attempt)) {
+			this.owner = undefined;
+			this.text = "";
+			this.pendingTools.clear();
+		}
+		this.voidedGeneration = Math.max(this.voidedGeneration, attempt.generation);
 	}
 	/** Accumulated text of the owning attempt. */
 	view(): { attempt: Attempt | undefined; text: string } {

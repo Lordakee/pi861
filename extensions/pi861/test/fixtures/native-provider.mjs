@@ -1,7 +1,10 @@
 // Deterministic local Pi provider. Tests host integration, NOT real-model quality.
+// Streams real event shards (text_delta / toolcall_delta / toolcall_end) so the runtime's
+// streaming attempt adapter consumes a genuine incremental stream, not a one-shot done.
 import { createAssistantMessageEventStream, getCurrentTools } from "@earendil-works/pi-ai";
 import { appendFileSync } from "node:fs";
 const text=m=>typeof m.content==="string"?m.content:(m.content??[]).filter(x=>x.type==="text").map(x=>x.text).join("\n");
+const shards=(value,count=2)=>{const parts=[];for(let i=0;i<count;i++){const from=Math.ceil(value.length*i/count),to=Math.ceil(value.length*(i+1)/count);if(value.slice(from,to))parts.push(value.slice(from,to));}return parts.length?parts:[value];};
 export default function fixture(pi){
  let failed=false;
  pi.registerProvider("pi861-fixture",{baseUrl:"http://127.0.0.1/unused-fixture",api:"openai-completions",apiKey:"test-no-external-request",
@@ -25,7 +28,21 @@ export default function fixture(pi){
  result.content=[{type:"toolCall",id:"fixture-write-call",name:"write",arguments:{path:"fixture.txt",content:"written through real Pi"}}];result.stopReason="toolUse";
  }
  output.push({type:"start",partial:result});
- if(result.stopReason==="error")output.push({type:"error",reason:"error",error:result});else output.push({type:"done",reason:result.stopReason,message:result});
+ if(result.stopReason==="error"){output.push({type:"error",reason:"error",error:result});}
+ else{
+ for(const [index,block] of (Array.isArray(result.content)?result.content:[]).entries()){
+ if(block.type==="text"){
+ output.push({type:"text_start",contentIndex:index,partial:result});
+ for(const shard of shards(String(block.text??"")))output.push({type:"text_delta",contentIndex:index,delta:shard,partial:result});
+ output.push({type:"text_end",contentIndex:index,content:String(block.text??""),partial:result});
+ }else if(block.type==="toolCall"){
+ output.push({type:"toolcall_start",contentIndex:index,partial:result});
+ for(const shard of shards(JSON.stringify(block.arguments??{})))output.push({type:"toolcall_delta",contentIndex:index,delta:shard,partial:result});
+ output.push({type:"toolcall_end",contentIndex:index,toolCall:block,partial:result});
+ }
+ }
+ output.push({type:"done",reason:result.stopReason,message:result});
+ }
  return output;
  }});
 }

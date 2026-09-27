@@ -132,7 +132,7 @@ test("auxiliary calls share recovery, budget and metering",async()=>{
  const ledgerStore=memstore({kinds:{},targets:{}});
  const aux=new AuxiliaryModelService({targets,preferred:"cheap",requirements:policy().requirements,
   recovery:{failoverEnabled:true,failbackEnabled:true,probeIntervalMs:20,maxProbeIntervalMs:100,requiredProbeSuccesses:2},maxAttempts:3,requestTimeoutMs:500},
-  async(target,prompt,_signal,hooks)=>{hooks.progress();if(target.id==="cheap")throw new ModelFailure("transient");return {text:`done:${prompt}`,usage:usage(3,4)};},
+  async(target,_attempt,prompt,_signal,hooks)=>{hooks.progress();if(target.id==="cheap")throw new ModelFailure("transient");return {text:`done:${prompt}`,usage:usage(3,4)};},
   {budget:new RequestBudget(budgetStore.store),ledger:new UsageLedger(ledgerStore.store)});
  assert.equal(await aux.generate("intake","classify this",signal()),"done:classify this");
  assert.equal(aux.state.active,"strong");
