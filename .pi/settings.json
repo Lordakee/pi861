@@ -1,0 +1,7 @@
+{
+	"defaultProvider": "zai-coding-cn",
+	"defaultModel": "glm-5.3-flash",
+	"modelThinkingLevels": {
+		"zai-coding-cn/glm-5.3-flash": "max"
+	}
+}
