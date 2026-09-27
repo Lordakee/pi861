@@ -42,7 +42,11 @@ test("source changing during compilation rejects the stale candidate", async t =
   } }, new AbortController().signal), /changed/);
 });
 test("symbolic links are not traversed during Skill installation", async t => {
-  const { repo, source } = setup(t); symlinkSync("/tmp", join(source, "outside"));
+  const { repo, source } = setup(t);
+  // The rejection contract is symlink-specific (lstat check), so no junction fallback here: skip
+  // explicitly where symlink creation is unavailable instead of weakening the assertion.
+  try { symlinkSync(tmpdir(), join(source, "outside")); }
+  catch { return t.skip("symlink creation unavailable on this platform"); }
   await assert.rejects(repo.install(source, { id: "a", revision: "auto", group: "debug" }), /symlinks/);
 });
 // R4.7: a regular file with a second hard link must be rejected instead of archived.
