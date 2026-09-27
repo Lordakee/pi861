@@ -74,7 +74,13 @@ export class ProjectRunner {
 	}
 	async pause(): Promise<void> { await this.options.coordinator.control("pause"); this.controller?.abort(); this.wake(); await this.runPromise?.catch(() => {}); }
 	/** Resume dispatch on the same runner instance; no reconstruction required. */
-	async resume(): Promise<void> { await this.options.coordinator.control("resume"); if (!this.runPromise) void this.start().catch(() => {}); }
+	async resume(): Promise<void> {
+		await this.options.coordinator.control("resume");
+		// A resume landing while pause() is still draining the loop must wait out that drain,
+		// mirroring pause(); otherwise the drained loop exits with no restart and the active goal strands.
+		if (this.controller?.signal.aborted) await this.runPromise?.catch(() => {});
+		if (!this.runPromise) void this.start().catch(() => {});
+	}
 	/** Single execution right over the integration workspace; waits out a live foreign holder. */
 	private async acquireIntegration(holder: string, signal: AbortSignal): Promise<number> {
 		const ttlMs = this.options.integrationLeaseMs ?? 120_000;
@@ -151,8 +157,10 @@ export class ProjectRunner {
 					await this.options.coordinator.releaseIntegration(holder, generation).catch(() => {});
 				}
 			});
-			// A failed integration blocks subsequent merges: never work on an unresolved merge tree.
-			this.integrationTail = integrate;
+			// The chain records settlement, never failure: a rejected tail would skip every later
+			// callback and permanently block all integration. This task still awaits integrate below,
+			// so its own failure is contained to this merge (blocked task + tracked repair entry).
+			this.integrationTail = integrate.catch(() => {});
 			await integrate;
 		} catch {
 			await this.options.coordinator.block(lease, "Execution or validation failed; inspect preserved workspace before retry", randomUUID()).catch(() => {});
