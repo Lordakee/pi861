@@ -8,7 +8,14 @@ import {
 	type MemoryInput,
 	type MemorySnapshot,
 } from "./src/memory.ts";
-import { record, type SearchOptions, searchOptionsFromEnv, searchPayload, searchResults, webSearch } from "./src/search.ts";
+import {
+	record,
+	type SearchOptions,
+	searchOptionsFromEnv,
+	searchPayload,
+	searchResults,
+	webSearch,
+} from "./src/search.ts";
 
 /**
  * Narrow structural port matched against Pi 0.86.1's extensions/types.ts.
