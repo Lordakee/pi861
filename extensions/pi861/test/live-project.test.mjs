@@ -110,6 +110,10 @@ test("git lock probe detects real worktree locks",async()=>{const {root,path}=aw
  const gitdir=(await readFile(join(ws.path,".git"),"utf8")).replace("gitdir:","").trim();
  await writeFile(join(gitdir,"index.lock"),"");
  assert.deepEqual(service.gitLocks(ws),[join(gitdir,"index.lock")]);
+ await mkdir(join(gitdir,"refs","heads","feature"),{recursive:true}); // m4rev-F007: refs/**/*.lock
+ await writeFile(join(gitdir,"refs","heads","feature","topic.lock"),"");
+ await writeFile(join(gitdir,"MERGE_HEAD"),""); // an unconcluded merge still owns the tree
+ assert.deepEqual(service.gitLocks(ws).sort(),[join(gitdir,"MERGE_HEAD"),join(gitdir,"index.lock"),join(gitdir,"refs","heads","feature","topic.lock")].sort());
  }finally{await rm(root,{recursive:true,force:true});}});
 test("failed integration leaves a tracked, resolvable repair entry",{timeout:30000},async()=>{
  const {root,path}=await repo();
@@ -201,6 +205,75 @@ test("rolling planner refills below the watermark, retries conflicts and seals",
   {task:{id:"P",title:"P",dependsOn:["Q"],writeScopes:["p.txt"],capabilities:[],acceptance:["ok"]},execution:{instructions:"p",roleId:"dev",modelId:"test",checkIds:["verify"]}},
   {task:{id:"Q",title:"Q",dependsOn:["P"],writeScopes:["q.txt"],capabilities:[],acceptance:["ok"]},execution:{instructions:"q",roleId:"dev",modelId:"test",checkIds:["verify"]}}],
   (await coordinator.state()).board.version),/cycle/); // incremental cycle check
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+test("an integration failure is contained: later tasks integrate and a repaired task reintegrates",{timeout:30000},async()=>{ // m4rev-F001
+ const {root,path}=await repo();
+ try{
+ const workspace=new Workspaces(path,join(root,"trees"));const base=await workspace.head();
+ const coordinator=new ProjectCoordinator(new FileStateStore(join(root,"state.json"),emptyProject("fixture")),{maxConcurrent:1,maxAttempts:2});
+ const integration=await workspace.create("integration",1,base);
+ // Fails only for merged a.txt checked in the integration workspace while the repair marker is absent.
+ const strict={id:"strict",command:process.execPath,args:["-e",`if(require('fs').existsSync('a.txt')&&!require('fs').existsSync('fixed')&&process.env.PI861_WORKSPACE===${JSON.stringify(integration.path)})process.exit(1)`]};
+ const withCheck=(id,checkIds)=>({task:{id,title:id,dependsOn:[],writeScopes:[`${id.toLowerCase()}.txt`],capabilities:[],acceptance:["ok"]},execution:{instructions:`implement ${id}`,roleId:"dev",modelId:"test",checkIds}});
+ await coordinator.create("contained failure",base,[withCheck("A",["verify","strict"]),withCheck("B",["verify"])]);
+ const runner=new ProjectRunner({coordinator,workspaces:workspace,integration,checks:[pass(),strict],workers:[worker()],idlePollMs:100});
+ const settled=runner.start();
+ await waitFor(async()=>{const s=await coordinator.state();return s.board.tasks.find(t=>t.id==="A").status==="blocked"&&s.board.tasks.find(t=>t.id==="B").status==="done";});
+ const entry=(await coordinator.openIntegrationFailures())[0];
+ assert.equal(entry.taskId,"A"); // B must still integrate after A's failed merge
+ await writeFile(join(integration.path,"fixed"),"operator repair\n"); // reconcile the merge scene
+ await coordinator.resolveIntegrationFailure(entry.id);
+ await coordinator.unblock("A"); // attempt budget (1 of 2) permits exactly one redispatch
+ await waitFor(async()=>(await coordinator.state()).board.tasks.find(t=>t.id==="A").status==="done");
+ await waitFor(async()=>(await coordinator.state()).status==="review");
+ await settled;
+ assert.equal(await readFile(join(integration.path,"a.txt"),"utf8"),"A");
+ assert.equal(await readFile(join(integration.path,"b.txt"),"utf8"),"B");
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+test("rolling planner withdraws and appends within one tick",async()=>{ // m4rev-F002
+ const root=await mkdtemp(join(tmpdir(),"pi861-rolling-"));try{
+ const coordinator=new ProjectCoordinator(new FileStateStore(join(root,"state.json"),emptyProject("p")),{maxConcurrent:2,maxAttempts:2});
+ await coordinator.create("rolling","a".repeat(40),[spec("A"),spec("B")],{planOpen:true});
+ const planner=new RollingPlanner(coordinator,{lowWatermark:3,signal:new AbortController().signal,plan:async()=>({tasks:[spec("C")],withdraw:["B"]})});
+ assert.equal(await planner.tick(),1);
+ const state=await coordinator.state();
+ assert.deepEqual(state.board.tasks.map(task=>task.id).sort(),["A","C"]);
+ assert.ok(state.execution["C"]);assert.equal(state.execution["B"],undefined); // withdrawn execution contracts go too
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+test("idle polls claim nothing and journal no receipts",async()=>{ // m4rev-F003
+ const root=await mkdtemp(join(tmpdir(),"pi861-idle-"));try{
+ const coordinator=new ProjectCoordinator(new FileStateStore(join(root,"state.json"),emptyProject("p")),{maxConcurrent:2,maxAttempts:2});
+ await coordinator.create("goal","a".repeat(40),[spec("A"),spec("C")]); // queued work exists, none claimable below
+ const before=Object.keys((await coordinator.state()).receipts).length;
+ const bystander={id:"w",capabilities:[],roleIds:["unrelated"],modelIds:["test"]};
+ for(let i=0;i<5;i++)assert.equal(await coordinator.claim(bystander,`idle-${i}`),null);
+ assert.equal(Object.keys((await coordinator.state()).receipts).length,before);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+test("resume during a pause drain restarts the dispatch loop",{timeout:40000},async()=>{ // m4rev-F004
+ const {root,path}=await repo();
+ try{
+ const workspace=new Workspaces(path,join(root,"trees"));const base=await workspace.head();
+ const coordinator=new ProjectCoordinator(new FileStateStore(join(root,"state.json"),emptyProject("fixture")),{maxConcurrent:2,maxAttempts:2});
+ await coordinator.create("pause drain goal",base,[spec("A"),spec("B")]);
+ const integration=await workspace.create("integration",1,base);
+ const events=[];
+ const slow=ws=>({command:process.execPath,args:[fileURLToPath(new URL("./fixtures/pi-worker-slow-exit.mjs",import.meta.url))],cwd:ws.path});
+ const runner=new ProjectRunner({coordinator,workspaces:workspace,integration,checks:[pass()],
+  workers:[0,1].map(id=>({identity:{id:`w${id}`,capabilities:[],roleIds:["dev"],modelIds:["test"]},process:slow})),
+  idlePollMs:100,onProgress:e=>events.push(`${e.taskId}:${e.state}`)});
+ const settled=runner.start();
+ await waitFor(async()=>{const s=await coordinator.state();return s.board.tasks.some(task=>task.id==="B"&&task.status==="running");});
+ const pausing=runner.pause();
+ await waitFor(()=>events.some(entry=>entry.endsWith(":blocked"))); // draining: abort delivered, session close still pending
+ await runner.resume(); // must wait out the drain, then restart dispatch itself
+ await pausing;
+ for(const task of (await coordinator.state()).board.tasks) if(task.status==="blocked") await coordinator.unblock(task.id);
+ await waitFor(async()=>(await coordinator.state()).status==="review");
+ await settled;
  }finally{await rm(root,{recursive:true,force:true});}
 });
 test("team persists across goals and accounting covers the whole task tree",async()=>{

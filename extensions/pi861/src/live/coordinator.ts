@@ -38,7 +38,7 @@ export class ProjectCoordinator {
 	onChange(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
 	private wake(): void { for (const listener of [...this.listeners]) { try { listener(); } catch { /* listener failures never abort coordination */ } } }
 	async state(): Promise<ProjectState> { return this.store.read(); }
-	private async change<R>(principal: string, requestId: string, intent: unknown, fn: (state: ProjectState, board: TaskBoard) => R, wakeup = false): Promise<R> {
+	private async change<R>(principal: string, requestId: string, intent: unknown, fn: (state: ProjectState, board: TaskBoard) => R, wakeup = false, journalNull = true): Promise<R> {
 		if (!principal || !requestId || requestId.length > 200) throw new Error("Mutation identity required");
 		const result = await this.store.update((state) => {
 			const key = digest([principal, requestId]), hash = digest(intent), receipt = state.receipts[key];
@@ -46,7 +46,8 @@ export class ProjectCoordinator {
 			const beforeBoard = state.board;
 			const board = new TaskBoard(this.limits, state.board);
 			const result = fn(state, board); if (state.board === beforeBoard) state.board = board.state;
-			state.receipts[key] = { hash, result: result ?? null };
+			// An empty claim journals nothing: otherwise idle polls grow receipts (and rewrite state) once per second per worker.
+			if (journalNull || (result !== null && result !== undefined)) state.receipts[key] = { hash, result: result ?? null };
 			return result;
 		});
 		if (wakeup) this.wake();
@@ -111,7 +112,7 @@ export class ProjectCoordinator {
 			const task = board.claim(worker.id, worker.capabilities, Date.now(), leaseMs, allowed);
 			if (!task) return null;
 			return { task, execution: state.execution[task.id] as ExecutionSpec, baseCommit: state.baseCommit, goalId: state.goalId ?? "" };
-		});
+		}, false, false);
 	}
 	async heartbeat(workerId: string, lease: Lease, requestId: string, leaseMs = 60_000): Promise<void> {
 		if (workerId !== lease.workerId) throw new Error("Foreign task lease");
@@ -293,8 +294,12 @@ export class RollingPlanner {
 			this.options.signal.throwIfAborted();
 			if (!refill.tasks.length && !refill.seal && !refill.withdraw?.length) return 0;
 			try {
-				if (refill.withdraw?.length) await this.coordinator.withdraw(refill.withdraw, state.board.version);
-				if (refill.tasks.length) await this.coordinator.append(refill.tasks, state.board.version);
+				if (refill.withdraw?.length) {
+					await this.coordinator.withdraw(refill.withdraw, state.board.version);
+					// withdraw bumps the plan version: re-read it like seal, or this append CASs against
+					// a stale number, retries, replays the idempotent withdraw and dies on Unknown task.
+					if (refill.tasks.length) await this.coordinator.append(refill.tasks, (await this.coordinator.state()).board.version);
+				} else if (refill.tasks.length) await this.coordinator.append(refill.tasks, state.board.version);
 				if (refill.seal) await this.coordinator.seal((await this.coordinator.state()).board.version);
 				return refill.tasks.length;
 			} catch (error) {

@@ -1,6 +1,6 @@
 import { randomUUID, createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdirSync, lstatSync, existsSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, lstatSync, existsSync, readFileSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { normalizeScope } from "../scheduler.ts";
@@ -98,7 +98,18 @@ export class Workspaces {
 			gitDir = pointer.slice("gitdir:".length).trim();
 		}
 		if (!existsSync(gitDir)) return [];
-		return ["index.lock", "config.lock", "HEAD.lock", "shallow.lock", "gc.pid"]
+		// MERGE_HEAD is not a lock file, but an unconcluded merge still owns the tree.
+		const locks = ["index.lock", "config.lock", "HEAD.lock", "shallow.lock", "gc.pid", "MERGE_HEAD"]
 			.map((name) => join(gitDir, name)).filter((path) => existsSync(path));
+		try { locks.push(...this.refLocks(join(gitDir, "refs"))); } catch { /* refs vanishing mid-scan is not a lock */ }
+		return locks;
+	}
+	/** Public-ref updates lock under nested refs directories, at any branch or tag depth. */
+	private refLocks(dir: string): string[] {
+		return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+			const path = join(dir, entry.name);
+			if (entry.isDirectory()) return this.refLocks(path);
+			return entry.name.endsWith(".lock") ? [path] : [];
+		});
 	}
 }
