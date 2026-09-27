@@ -68,7 +68,9 @@ Linux/macOS：
 
 ```sh
 export PI861_WEB_SEARCH_ENABLED=1
-export BRAVE_SEARCH_API_KEY='<由环境或密钥管理器注入>'
+# 后端二选一：自托管 SearXNG（无 API 密钥）或 Brave
+export PI861_SEARCH_SEARXNG_URL='http://127.0.0.1:8888'
+# 或 export BRAVE_SEARCH_API_KEY='<由环境或密钥管理器注入>'
 pi -e ./extensions/pi861/index.ts
 ```
 
@@ -76,15 +78,19 @@ PowerShell：
 
 ```powershell
 $env:PI861_WEB_SEARCH_ENABLED = '1'
-$env:BRAVE_SEARCH_API_KEY = '<由环境或密钥管理器注入>'
+$env:PI861_SEARCH_SEARXNG_URL = 'http://127.0.0.1:8888'
+# 或 $env:BRAVE_SEARCH_API_KEY = '<由环境或密钥管理器注入>'
 pi -e ./extensions/pi861/index.ts
 ```
 
 使用 `/web-search PostgreSQL row level security` 或模型工具 `pi861_web_search`。
-查询会发送到 Brave；不要包含私有代码、凭据或未经授权的个人资料。
-默认禁用；没有密钥时报错，不伪造结果。首版未实现网页全文读取与其他搜索供应商。
-HTTP 参数按 Brave 官方接口编写：
+未显式指定 provider 时优先使用配置的 SearXNG 实例（固定出站地址，无密钥），其次 Brave；两者都没有时报错，不伪造结果。
+不要在查询中包含私有代码、凭据或未经授权的个人资料。
+默认禁用。首版未实现网页全文读取与其他搜索供应商。
+Brave HTTP 参数按其官方接口编写：
 https://api-dashboard.search.brave.com/app/documentation/web-search
+SearXNG 使用实例的 `search?format=json` 接口：
+https://docs.searxng.org/user/configured_engines.html
 
 ## 记忆
 

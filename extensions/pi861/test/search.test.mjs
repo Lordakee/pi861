@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { resolveSearchProvider, searchPayload, searchResults, supportedSearchProviders, webSearch } from "../src/search.ts";
+import { resolveSearchProvider, searchOptionsFromEnv, searchPayload, searchResults, supportedSearchProviders, webSearch } from "../src/search.ts";
 const opts = (impl) => ({ enabled: true, apiKey: "test-only-placeholder", fetch: impl });
+const sx = (impl) => ({ enabled: true, searxngUrl: "http://127.0.0.1:8888", fetch: impl });
 const response = (results) => Response.json({ web: { results } });
-test("disabled or missing-key search does not call a backend", async () => {
+const searxngResponse = (results) => Response.json({ results });
+test("disabled or unconfigured search does not call a backend", async () => {
 	let calls = 0;
 	const fake = async () => { calls++; return response([]); };
 	await assert.rejects(webSearch("test", { ...opts(fake), enabled: false }), /disabled/);
-	await assert.rejects(webSearch("test", { ...opts(fake), apiKey: undefined }), /Missing/);
+	await assert.rejects(webSearch("test", { enabled: true, fetch: fake }), /No search backend configured/);
+	await assert.rejects(webSearch("test", { enabled: true, provider: "brave", fetch: fake }), /Missing BRAVE_SEARCH_API_KEY/);
+	await assert.rejects(webSearch("test", { enabled: true, provider: "searxng", fetch: fake }), /Missing PI861_SEARCH_SEARXNG_URL/);
 	assert.equal(calls, 0);
 });
 test("uses fixed endpoint and credential header, never a query-string key", async () => {
@@ -61,13 +65,71 @@ test("a cancelled request never reaches the network", async () => {
 	assert.equal(calls, 0);
 });
 test("only implemented providers are reported and selectable", async () => {
-	assert.deepEqual(supportedSearchProviders(), ["brave"]);
+	assert.deepEqual(supportedSearchProviders(), ["searxng", "brave"]);
 	assert.equal(resolveSearchProvider(undefined).id, "brave");
+	assert.equal(resolveSearchProvider("searxng").id, "searxng");
 	let calls = 0;
 	const fake = async () => { calls++; return response([]); };
-	assert.throws(() => resolveSearchProvider("google"), /Unsupported search provider "google"; implemented: brave/);
+	assert.throws(() => resolveSearchProvider("google"), /Unsupported search provider "google"; implemented: searxng, brave/);
 	await assert.rejects(webSearch("q", { ...opts(fake), provider: "bing" }), /Unsupported search provider "bing"/);
 	assert.equal(calls, 0);
+});
+test("searxng searches only the configured instance without any credential", async () => {
+	const found = await webSearch("TypeScript docs", sx(async (url, config) => {
+		assert.equal(url.origin, "http://127.0.0.1:8888");
+		assert.equal(url.pathname, "/search");
+		assert.equal(url.searchParams.get("q"), "TypeScript docs");
+		assert.equal(url.searchParams.get("format"), "json");
+		assert.deepEqual(config.headers, { Accept: "application/json" });   // no token header anywhere
+		assert.equal(config.redirect, "error");
+		return searxngResponse([{ title: "Docs", url: "https://example.org/docs", content: "A reference" }]);
+	}));
+	assert.equal(found.provider, "searxng");
+	assert.deepEqual(found.results, [{ title: "Docs", url: "https://example.org/docs", snippet: "A reference" }]);
+	assert.equal(found.truncated, false);
+	assert.ok(found.retrievedAt);
+});
+test("searxng malformed payloads are not reported as zero hits; empty results are", async () => {
+	await assert.rejects(webSearch("query", sx(async () => Response.json({}))), /lacks/);
+	await assert.rejects(webSearch("query", sx(async () => Response.json({ results: "wrong" }))), /Malformed/);
+	const empty = await webSearch("query", sx(async () => searxngResponse([])));
+	assert.deepEqual(empty.results, []);
+	assert.equal(empty.truncated, false);
+});
+test("searxng truncation, unsafe links and size/cancel bounds reuse the shared paths", async () => {
+	const over = await webSearch("query", sx(async () => searxngResponse([
+		{ title: "t", url: "https://example.org", content: "a".repeat(2100) },
+		{ title: "u", url: "javascript:alert(1)", content: "x" },
+	])));
+	assert.equal(over.truncated, true);
+	assert.equal(over.results.length, 1);
+	assert.equal(over.results[0].snippet.length, 2000);
+	await assert.rejects(webSearch("query", { ...sx(async () => new Response("x".repeat(2048))), maxResponseBytes: 1024 }), /byte limit/);
+	const controller = new AbortController();
+	controller.abort(new Error("cancel"));
+	let calls = 0;
+	await assert.rejects(webSearch("query", sx(async () => { calls++; return searxngResponse([]); }), controller.signal), /cancel/);
+	assert.equal(calls, 0);
+});
+test("provider default prefers the key-less searxng backend and falls back to brave", async () => {
+	let dest = "";
+	const found = await webSearch("q", { enabled: true, apiKey: "k", searxngUrl: "http://127.0.0.1:8888", fetch: async (url) => { dest = url.pathname; return searxngResponse([]); } });
+	assert.equal(dest, "/search");
+	assert.equal(found.provider, "searxng");
+	const brave = await webSearch("q", { enabled: true, apiKey: "k", fetch: async (url) => { dest = url.hostname; return response([]); } });
+	assert.equal(dest, "api.search.brave.com");
+	assert.equal(brave.provider, "brave");
+});
+test("env parsing keeps search default-off and never reaches the network unconfigured", async () => {
+	const off = searchOptionsFromEnv({});
+	assert.equal(off.enabled, false);
+	let calls = 0;
+	await assert.rejects(webSearch("q", { ...off, fetch: async () => { calls++; return response([]); } }), /disabled/);
+	assert.equal(calls, 0);
+	assert.deepEqual(
+		searchOptionsFromEnv({ PI861_WEB_SEARCH_ENABLED: "1", PI861_SEARCH_SEARXNG_URL: " http://127.0.0.1:8888 " }),
+		{ enabled: true, apiKey: undefined, searxngUrl: "http://127.0.0.1:8888" },
+	);
 });
 test("long search results become paged references instead of inline JSON", async () => {
 	const hits = Array.from({ length: 10 }, (_, index) => ({ title: `t${index}`, url: `https://example.org/${index}`, description: "d".repeat(2000) }));

@@ -8,7 +8,7 @@ import {
 	type MemoryInput,
 	type MemorySnapshot,
 } from "./src/memory.ts";
-import { record, type SearchOptions, searchPayload, searchResults, webSearch } from "./src/search.ts";
+import { record, type SearchOptions, searchOptionsFromEnv, searchPayload, searchResults, webSearch } from "./src/search.ts";
 
 /**
  * Narrow structural port matched against Pi 0.86.1's extensions/types.ts.
@@ -121,10 +121,7 @@ export function installPi861(pi: PiHost, options: Pi861Options = {}): void {
 	}
 	installClaim = { host, label };
 	const goals = new GoalController((state) => pi.appendEntry(GOAL_ENTRY, state ?? null));
-	const searchOptions = options.search ?? {
-		enabled: process.env.PI861_WEB_SEARCH_ENABLED === "1",
-		apiKey: process.env.BRAVE_SEARCH_API_KEY,
-	};
+	const searchOptions = options.search ?? searchOptionsFromEnv();
 	let memory: MemoryBackend | undefined = options.memory?.backend;
 	let scope = options.memory?.scope ?? "";
 	let epoch = 0;
@@ -417,7 +414,7 @@ export function installPi861(pi: PiHost, options: Pi861Options = {}): void {
 			},
 		});
 	pi.registerCommand("web-search", {
-		description: "Search the web with the configured Brave backend (explicit opt-in)",
+		description: "Search the web with the configured backend (SearXNG or Brave, explicit opt-in)",
 		handler: async (args, ctx) => {
 			try {
 				const payload = searchPayload(await webSearch(args, searchOptions));

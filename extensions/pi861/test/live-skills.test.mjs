@@ -56,6 +56,28 @@ test("hard-linked files are rejected during Skill installation", async t => {
   assert.ok(restored.files.some(file => file.path === "shared.txt"));
 });
 
+// R4.7: spaces in the install directory and file names must survive the archive and compile-input
+// round trips unchanged (data-passing verification, not a real Windows-platform verification).
+test("paths with spaces round-trip through archiving and compile input (R4.7)", async t => {
+  const { repo, directory } = setup(t);
+  const source = join(directory, "My Skills", "debug two");
+  mkdirSync(join(source, "sub dir"), { recursive: true });
+  writeFileSync(join(source, "SKILL.md"), "---\nname: debug\ndescription: paths with spaces\n---\nRead the error. Preserve evidence.");
+  writeFileSync(join(source, "run me.sh"), "echo ok");
+  writeFileSync(join(source, "sub dir", "note two.md"), "space-safe note");
+  const installed = await repo.install(source, { id: "a", revision: "auto", group: "debug" });
+  assert.deepEqual(installed.files.map(file => file.path).sort(), ["SKILL.md", "run me.sh", "sub dir/note two.md"]);
+  const original = await repo.original("a", installed.revision);
+  assert.equal(original.files.find(file => file.path === "sub dir/note two.md").base64, Buffer.from("space-safe note").toString("base64"));
+  let seen;
+  const recording = { async compile(input) { seen = input; return compiler.compile(input); } };   // compiler input is JSON, never a command line
+  await repo.compile("debug", recording, new AbortController().signal);
+  const doc = seen.documents.find(d => d.path === "sub dir/note two.md");
+  assert.equal(doc.content, "space-safe note");
+  assert.equal(seen.documents.find(d => d.path === "run me.sh").content, "echo ok");
+  assert.ok(!JSON.stringify(seen).includes(directory));   // only archive-relative paths travel, not the host path
+});
+
 // R6.7: controlled results persist under an explicit owner; reads re-check current authorization
 // so the reference id alone is never a bearer token.
 test("controlled results page for their owner and deny revoked or foreign identities (R6.7)", async t => {
