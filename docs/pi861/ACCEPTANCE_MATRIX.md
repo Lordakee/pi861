@@ -158,7 +158,7 @@ CI run <https://github.com/Lordakee/pi861/actions/runs/36317857198>（对应 `54
 | 编号 | 代码入口 | 测试 | 状态 | 缺口 / 备注 |
 | --- | --- | --- | --- | --- |
 | R7.1 | `index.ts`（命令+工具，未动本地工具集）、`src/search.ts`（独立适配） | host.test.mjs（disabled search has no model tool） | 受控协议验证通过 | — |
-| R7.2 | `src/search.ts`（固定端点/头/限额、provider 校验）、`index.ts`（env 配置） | search.test.mjs（11 用例：固定端点头、限额、畸形响应、取消不触网、"only implemented providers are reported and selectable" 等） | 受控协议验证通过 | SearXNG 开源后端已实现 @ `d4b686982`（AGPLv3 自托管、无 API 密钥、固定实例出站），Brave 保留可选付费；默认仍关闭（PI861_WEB_SEARCH_ENABLED）；HTTP fixture（fetch 注入），无真实外网验证。 |
+| R7.2 | `src/search.ts`（固定端点/头/限额、provider 校验）、`index.ts`（env 配置） | search.test.mjs（11 用例：固定端点头、限额、畸形响应、取消不触网、"only implemented providers are reported and selectable" 等） | 受控协议验证通过 | SearXNG 开源后端 @ `d4b686982`（AGPLv3 自托管、无 API 密钥、固定实例出站）；**真实服务已验证**：本地 docker SearXNG 实例（127.0.0.1:8888）实测 webSearch 返回真实结果（provider=searxng、truncated 语义正常，2026-09-27）；Brave 保留可选付费（真实付费验收仍待授权）；默认仍关闭。 |
 | R7.3 | `src/search.ts`（retrievedAt/truncated/错误不伪造） | search.test.mjs（malformed payload not reported as zero hits / truncated snippets marked） | 受控协议验证通过 | — |
 | R7.4 | `index.ts`（默认关闭）、`search.ts`（无密钥报错）、`web-read.ts:403-413`（网页读默认关闭 PI861_WEB_READ_ENABLED） | search.test.mjs（disabled or missing-key does not call backend）、web-read.test.mjs（disabled or unapproved reads never reach the network） | 受控协议验证通过 | 工具描述明示不外发私有内容（提示层约束）。 |
 | R7.5 | `src/search.ts`（限长/取消）、`src/web-read.ts`（限长/超时/取消） | search.test.mjs（oversized body stopped / cancelled never reaches network）、web-read.test.mjs（同型用例） | 受控协议验证通过 | — |
