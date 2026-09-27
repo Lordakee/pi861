@@ -1,6 +1,6 @@
 # Pi861 配置说明（CONFIGURATION）
 
-- 首版日期：2026-09-22（P1 阶段交付）。本文于 2026-09-27 同步 M1-M5 已合入代码 `d45b981b4b493ce322c4af6ae2c90a320f0b48a5`。
+- 首版日期：2026-09-22（P1 阶段交付）。本文于 2026-09-27 同步 P4 定稿代码 `a667d206dabf5e99df742bc594a3ac16361d4a54`（含 M1-M5、接线、wire 复审与 P3 反例测试）。
 - 引用以**符号**（接口/函数/命令）为准并标注源文件（相对 `extensions/pi861/`），不绑定行号；尚未接入某个入口的可配置项明确标注（如"库层 API，RuntimeConfig 未暴露"）。
 
 ## 1. 配置面总览
@@ -158,7 +158,7 @@ ModelTarget 必填字段（`src/routing.ts`；缺一或非法即"Invalid or dupl
 | 提炼队列 | 每条 user/tool 来源的已提交记录入队 `queued`；记录再变更使旧任务 `obsolete` 并重建投影。`enrich()` 批处理：任务带 token 与 `expiresAt`（超时+5s）防僵尸占位，恢复时按 token 校验 |
 | 重试与死信 | 失败按 `classifyExtractionFailure` 分为 `transient`/`invalid_output`/`unknown`；`retry` 策略默认 maxAttempts=3、baseDelayMs=30000（指数倍增）；attempts 耗尽进入 **dead（死信）** |
 | 死信处置 API | `deadJobs()` 列出死信；`retryJob(id)` 将 dead/failed 重新入队并**重置尝试预算**；`abandonJob(id)` 仅对 dead 丢弃（不再派生任何内容）。库层 API（`src/live/layered-memory.ts`） |
-| 手动批次 | `/memory-maintain`（runtime 命令）：处理 `maxJobsPerWake`（默认 2）个提炼任务，需配置 `memory.modelId` |
+| 手动批次与运维动词 | `/memory-maintain`（runtime 命令，`runtime.ts` registerCommand）全部动词：**缺省**（处理 `maxJobsPerWake`（默认 2）个提炼任务，需配置 `memory.modelId`）；`dead`（列出提炼死信任务）；`pending`（数据库配置存在时列出未提交队列报告：`{count, critical, oldestQueuedAt, reasons[], dead[]}`，`dead[]` 含 `requestId/kind/scope/id/critical/queuedAt/failures/reason/deadAt`；未配 database 报错）；`retry <jobId>`（dead/failed 重新入队并重置预算）；`abandon <jobId|requestId>`（先试提炼死信任务 `abandonJob`，未命中再按 requestId 落到未提交队列死信 `abandonPending`，返回 boolean）。输出均为 JSON 通知 |
 | reconcile 语义 | `reconcile()` 修复**委派两阶段提交崩溃窗口**（item 已在权威 backend 提交、控制状态事务未跑）：以 items backend 为权威逐条重整合缺失的 change/job；**幂等**（重跑零新增）；嵌入（非委派）模式恒返回 0。权威枚举优先 `exportItems`，否则 `list` 分页（看不到 withdrawn）；无事件日志时中间版本不可重建。启动/运维时调用（库层 API） |
 | 增量同步 | `delta(afterSequence)` 游标分页 + `ContextAssembler`（session_start/resume、model_change、compaction、node_change 触发的上下文组装与事件召回），供对等节点刷新派生视图 |
 
@@ -214,7 +214,7 @@ ModelTarget 必填字段（`src/routing.ts`；缺一或非法即"Invalid or dupl
 | 动态路由 | `config.models.enableRouting` | 开（有 models 时） | 不做接待分类，仅固定+异常升级 |
 | failover / failback | `config.models.recovery.*` + `/model-policy` | 配置必填 | 关 failover：不自动切备用；关 failback：不回切、停探测并清定时器 |
 | 部署边界 | `deploymentMode`（CapabilityOptions） | trusted-local | production-isolated：拒绝 stdio/明文 HTTP MCP 与 endpointConfined 断言（见 §7） |
-| Worker Shell | `config.project.allowWorkerShell` | 关 | bash/powershell 被 tool_call 守卫拒绝；基础工具集收敛为 read/write/edit/grep/find/ls/pi861_memory/pi861_model_route |
+| Worker Shell | `config.project.allowWorkerShell` | 关 | bash/powershell 被 tool_call 守卫拒绝；基础工具集收敛为 read/write/edit/grep/find/ls/pi861_memory/pi861_model_route。`pi861_model_route` 参数：`signal`+`reason` 必填，可选 `phase`（≤200 字符，完成阶段 id）与 `verificationPassed`（布尔，阶段验证结果）——均透传至 `modelRuntime.report`，进入路由证据与后续分类 |
 | Worker 模式 | `PI861_WORKER=1` | 关 | 见 2.2；与 /goal 注册互斥 |
 | 原始 Skill 被动发现 | skills-host 固定行为 | 关 | `options.skills=[]`，仅显式 /skill:name 可用原始 Skill |
 

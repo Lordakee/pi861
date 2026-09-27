@@ -1,62 +1,97 @@
 # Pi861 交接说明（HANDOFF）
 
-- 首版日期：2026-09-22（P1 阶段交付，随五份台账首版建立；后续每个阶段更新）。
-- 代码基线：`e3f07a789b7648f26ec72ce65fa5856046dbd6d3`（分支 `feat/pi861-runtime-v1`，与 main `c7cdb460a` 隔离，未合并）。
+- 首版日期：2026-09-22（P1 阶段交付；本版为 P4 定稿全量重写）。
+- 本轮开发基线：起始 `d28044896`（P0 复核后文档重绑）→ 最终 `a667d206dabf5e99df742bc594a3ac16361d4a54`（merge: P3 反例测试），共 34 个提交（`git log --oneline --reverse d28044896..a667d206d`）。
 
-## 1. 当前进度（截至本文写作时）
+## 1. 分支与推送状态（@ 定稿时）
 
-今日已完成：
-
-1. **规则与任务书入库**：任务书落盘为 [HANDOFF_PROMPT_2026-09-22.md](HANDOFF_PROMPT_2026-09-22.md)，仓库级开发规则经 AGENTS.md 更新（当前为未提交的工作区改动，见第 2 节）。
-2. **codex 开发计划生成**：[DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)（codex `gpt-6-astra`、read-only 沙箱、基于 e3f07a789 只读规划），确立 P0–P4 五阶段与 M1–M5 模块划分。
-3. **P1 文档台账首版（本文所属交付）**：[REQUIREMENTS.md](REQUIREMENTS.md)（109 条编号需求）、[ACCEPTANCE_MATRIX.md](ACCEPTANCE_MATRIX.md)（需求×入口×测试×证据×状态，绑定 e3f07a789）、[ARCHITECTURE.md](ARCHITECTURE.md)、[CONFIGURATION.md](CONFIGURATION.md)、本文件。
-
-进行中（并行子代理）：
-
-- **P0：修复 runtime.ts 并恢复四层检查链**。目标：修复 `runtime.ts(212,307)` TS1005（memory.put 外层对象缺一闭合括号，经复核确认）及随后暴露的全部类型/API/运行问题；消除双重断言（`runtime.ts:92,305`）与检查盲区（`extensions/tsconfig.json` 不含 runtime.ts、根 tsconfig/biome 不含扩展目录）；恢复"根检查 / 扩展独立 tsc / 真实 Pi 类型 / 实际宿主测试"四层，并补源码宿主验证。**本文档批次未触碰 extensions/ 下任何文件。**
-
-## 2. 工作区状态（本文写作时）
-
-- 分支 `feat/pi861-runtime-v1`，HEAD `e3f07a789`。
-- 工作区改动：`AGENTS.md` 已修改（未提交）；`docs/pi861/HANDOFF_PROMPT_2026-09-22.md`、`docs/pi861/DEVELOPMENT_PLAN.md` 未跟踪；本批次新增五份台账文档（REQUIREMENTS / ACCEPTANCE_MATRIX / ARCHITECTURE / CONFIGURATION / HANDOFF，均未提交）。
-- **本批次遵守约束：未修改 extensions/、packages/、根配置与任何测试文件；未创建提交、未 push。**
-- 无未推送的服务器端提交记录需要说明（文档均在工作区）。
-
-## 3. 重现方式（当前版本可执行的检查）
-
-环境：Node >=22.19.0；`npm ci --ignore-scripts`；全仓检查前需 `npm --prefix packages/ai run generate-models`。
-
-| 层 | 命令（cwd） | 当前预期结果 @ e3f07a789 |
+| 分支/远端 | 指向 | 状态 |
 | --- | --- | --- |
-| ① 根检查 | `npm run check`（仓库根） | 通过（CI repository-check 已证） |
-| ② 扩展独立 tsc | `node ../../node_modules/typescript/bin/tsc --noEmit --project tsconfig.json`（extensions/pi861） | 通过（不含 runtime.ts——P0 将消除该盲区） |
-| ③ 真实 Pi 类型 | `tsc --project tsconfig.host.json`（对照已发布 Pi 0.86.1） | **失败：runtime.ts(212,307) TS1005**（P0 修复中） |
-| ④ 实际宿主测试 | `PI861_TEST_PI_CLI=… node --experimental-strip-types --test test/pi-host.integration.mjs test/runtime-host.integration.mjs` | 因 ③ 失败无法运行；不可计通过 |
-| 确定性测试 | `node --experimental-strip-types --test test/*.test.mjs` | 通过（16 个 .test.mjs 文件约 123 用例，CI deterministic 已证） |
-| SQL 集成 | 见 README（loopback pi861_test 专用变量） | 通过（CI postgres：真实 PostgreSQL 17） |
+| `pi861-p2-integration`（当前分支，HEAD） | `a667d206d` | 本地领先 origin 4 个提交（`65084e069`/`d2bff94d4`/`612facfe4`/`a667d206d`），**未推送** |
+| `pi861-p3-ax` | `612facfe4` | P3 反例测试任务分支，已并入 `a667d206d` |
+| `feat/pi861-runtime-v1`（本地与 origin 同指） | `542feb6f6` | 已推送；CI run [36317857198](https://github.com/Lordakee/pi861/actions/runs/36317857198) **5 job 全绿**（deterministic / postgres / repository-check / pi-host / pi-host-source） |
+| `origin/pi861-p2-integration` | `542feb6f6` | 与 origin/feat/pi861-runtime-v1 同指；待快进/推送到 `a667d206d` |
+| `main`（origin） | `a621f8582` | 本轮全部工作与 main 隔离，未合并（遵守任务书边界） |
 
-CI 基线 run：<https://github.com/wmqfl861/pi861/actions/runs/35687924923>（deterministic / postgres / repository-check 通过，pi-host 失败）。
+## 2. 完成清单（按模块，提交可追溯）
 
-## 4. 下一步（按 DEVELOPMENT_PLAN 顺序）
-
-1. **P0 完成**（并行子代理）：修复合入后，更新 ACCEPTANCE_MATRIX 中被标"阻塞"的 6 条 P0 相关条目（G6、R1.2、R1.8、R2.7、R6.6、R8.6）与行号引用，重跑四层检查并记录新 SHA。
-2. **P1 剩余**：落地共享契约 `src/contracts/`（C1–C7）；解除并行开发的共享文件冲突（runtime.ts/index.ts/compilers.ts/根配置/CI 归协调子代理；如拆 compilers.ts 先做纯移动）。
-3. **P2 五模块纵向开发**（M1 模型可靠性 / M2 Skill 与 MCP / M3 记忆与 PostgreSQL / M4 调度与 Goal / M5 搜索与验收），优先消化 ACCEPTANCE_MATRIX 中的"未实现"19 条与"仅内核"23 条（即 M1–M5 工作清单输入）。
-4. **P3 集成与十条反例**（AX1–AX10，当前 3 受控 / 4 仅内核 / 3 未实现）。
-5. **P4 独立审核与文档定稿**（未参与开发的子代理复核）。
-
-## 5. 阻断项
-
-| 阻断 | 影响 | 解法 |
+| 模块 | 交付提交 | 审核修复/验收 |
 | --- | --- | --- |
-| runtime.ts TS1005（212:307） | 完整入口不可运行；pi-host CI 失败；6 条需求端到端阻塞 | P0 修复（进行中） |
-| 双重断言与检查盲区 | 类型安全证据不完整（G6） | P0：显式适配函数 + 覆盖表 |
-| 真实模型/真实搜索/获准 MCP 验收未授权 | 相关条目只能停在"受控协议验证通过"，不得虚报 | 任务书规定：默认关闭的验收脚本 + 明确凭据变量/预算/清理，待用户授权后运行 |
-| 跨主机多节点环境未具备 | R3.7 只到 loopback fixture | 需要独立检出/主机环境后执行 M4 验收 |
-| Windows/Linux 差异覆盖不全 | 平台特定行为（路径大小写、文件锁恢复等）未验证 | P3 按具备执行条件的平台分别标注"未验证" |
+| M1 模型可靠性（aux 统一恢复/计量、三段截止、增量缓冲、共享健康域） | `42d0fc580` | 审核 `0566a2d8e`（m1rev-F001/F004）、merge `8e73af6a4` |
+| M2 Skill 与 MCP（自动归组、真工具绑定、发布证据四分类、部署边界、自研 MCP 客户端） | `3f32cf25b` | 审核 `3752b2b6c`（R5.5 双资源/共享绑定、有界重连） |
+| M3 记忆与 PostgreSQL（提炼恢复/死信、受控引用、权威统一、显式迁移、outbox、缓冲队列） | `2b8b2cd39` | 审核 `fec2f3609`（串行 flush、死信队列、reconcile） |
+| M4 调度与 Goal（持久唤醒、集成租约、工作区身份、worker-service 部署入口、复审池） | `74ef9b4ee` | 审核 `385ce83c1`（m4rev-F001/F002/F004）、双 Worker 验收 `8c8953088`、merge `5e2982d8b` |
+| M5 搜索与验收（有界网页读取、SSRF/重定向/重绑防护、受控分页、provider 接缝） | `1303783ea` | 审核 `bf221703e`（线性提取、teredo、默认端口）、merge `d45b981b4` |
+| 统一接线（M1-M5 服务接入 runtime.ts/index.ts） | `31a56510e` | CI 源码宿主 job `19b2dd709`、清理健壮性 `4edc8b6d5` |
+| 接线复审（wire review） | `96f8d1375` | F001 主路径预留盐防跨实例重放；F002 路由证据进分类器提示词 + pi861_model_route 可选 phase/verificationPassed 透传（含宿主集成断言）；F003 active goal 孤儿 resume 容错；F005 受控引用过期先修剪；F006 /memory-maintain pending/abandon |
+| 上游测试适配（CI 回绿基线） | `91eace93f`/`0d5011d33`/`bf89e07ff`/`542feb6f6` | 模型目录漂移与慢冷服务器适配；@ `542feb6f6` CI 5 job 全绿 |
+| 缺口修复 | `65084e069` | R6.3 宿主触发映射（session_resume/node_change+负例）；R6.7 受控结果 owner 建模+撤权即拒；R4.7 安装侧硬链接拒绝 |
+| G6 根检查收口 | `d2bff94d4` | 根 tsconfig/biome 纳入 pi861（runtime.ts 仍归 tsconfig.host.json）；`npm run check` 全链绿 |
+| P3 反例测试（AX4/AX5/AX10） | `612facfe4`、merge `a667d206d` | AX4 断流五位置受控矩阵；AX5 宿主级 Skill 生命周期（含回滚栅栏缺陷记录）；AX10 goal 端到端 |
+| 文档台账 | `8ed755104`/`021e5be99`/`cb07929d6` + 本版 P4 | 验收矩阵两次重绑 + 配置同步 + 本次定稿 |
 
-## 6. 台账使用约定
+台账状态：[ACCEPTANCE_MATRIX.md](ACCEPTANCE_MATRIX.md) 绑定 `a667d206d`，109 条中受控协议验证通过 94 / 真实服务已验证 1（PostgreSQL 临时库 CI 绿）/ 已接入 9 / 仅内核 2 / 未实现 3。
 
-- 每次状态变更必须：绑定新代码 SHA、更新 [ACCEPTANCE_MATRIX.md](ACCEPTANCE_MATRIX.md) 对应行、必要时同步 [REQUIREMENTS.md](REQUIREMENTS.md)（不得降低范围）。
+## 3. 验证基线（四层，本地实测 @ a667d206d，Linux/Node 24）
+
+| 层 | 命令（cwd=extensions/pi861） | 结果 |
+| --- | --- | --- |
+| L1 扩展独立 tsc | `node ../../node_modules/typescript/bin/tsc --noEmit --project tsconfig.json` | 0 错误 |
+| L2 确定性测试 | `node --experimental-strip-types --test test/*.test.mjs` | **251/251**（spawn 密集的 live-remote 双 Worker 用例满负载首轮偶发超时，重跑即绿） |
+| L3 宿主类型 | 安装 `@earendil-works/pi-coding-agent@0.86.1 typescript@5.9.3 @types/node@22.19.19` 到独立目录并符号链接为 `node_modules` 后 `node <该目录>/typescript/bin/tsc --project tsconfig.host.json --typeRoots <该目录>/node_modules/@types` | 0 错误 |
+| L4 发布宿主集成 | `PI861_TEST_PI_CLI=<已发布 0.86.1>/dist/bundle/cli.js node --experimental-strip-types --test test/pi-host.integration.mjs test/runtime-host.integration.mjs test/skills-host.integration.mjs` | **3/3** |
+| AX10 goal e2e | 同上宿主 + `test/goal-e2e.integration.mjs` | 两连跑绿（未入 CI 清单） |
+| 根检查 | 仓库根 `npm run check` | 退出 0（含 pi861，自 `d2bff94d4`） |
+| 源码宿主 tsgo | `../../node_modules/.bin/tsgo --project tsconfig.host-source.json` | 退出 0 |
+| CI（远端） | run [36317857198](https://github.com/Lordakee/pi861/actions/runs/36317857198) @ `542feb6f6` | 5 job 全绿；`a667d206d` 的 4 个新提交待推送后验证 |
+
+## 4. 最短复现步骤
+
+```sh
+npm ci --ignore-scripts                 # 仓库根
+npm --prefix packages/ai run generate-models   # 生成 provider catalog（根检查与源码宿主必需）
+# L1/L2：
+cd extensions/pi861 && node ../../node_modules/typescript/bin/tsc --noEmit --project tsconfig.json
+node --experimental-strip-types --test test/*.test.mjs
+# L3/L4：先按 CI 方式安装隔离宿主（@earendil-works/pi-coding-agent@0.86.1 + typescript@5.9.3 + @types/node@22.19.19），
+# 符号链接为 extensions/pi861/node_modules，再：
+node <宿主目录>/node_modules/typescript/bin/tsc --project tsconfig.host.json --typeRoots <宿主目录>/node_modules/@types
+PI861_TEST_PI_CLI=<宿主目录>/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
+  node --experimental-strip-types --test test/pi-host.integration.mjs test/runtime-host.integration.mjs test/skills-host.integration.mjs
+```
+
+SQL 集成（可选，同 CI postgres job）：`PI861_ALLOW_TEST_DATABASE=1` + `PI861_TEST_POSTGRES_URL`（仅 loopback pi861_test 库）+ `PI861_TEST_DRIVER_ROOT`，跑 `test/postgres.integration.mjs`。全仓非 e2e 测试用根目录 `./test.sh`（勿直接跑全量 vitest：含 e2e，且本机 4 vCPU 并行会饿死 spawn 密集用例）。
+
+## 5. 待授权清单（单列，不与受控证据混淆）
+
+| 项 | 现状 |
+| --- | --- |
+| 真实付费模型验收 | 未执行；全部模型路径为确定性本地 provider fixture（含 AX10），真实用量归因/接管仅 fixture 验证 |
+| 真实搜索后端 | 未执行；Brave 仅 HTTP fixture，无真实密钥联网验证 |
+| 跨主机多节点 | 未执行；双 Worker/远程服务为 loopback HTTP fixture |
+| 真实业务数据库 | postgres 新路径 CI 已绿（真实临时 PostgreSQL 17 + 受限角色，run 36317857198），真实业务库未触 |
+
+## 6. 未实现 / 已知缺陷清单
+
+| 项 | 说明 |
+| --- | --- |
+| R3.8 OS 沙箱声明式边界 | 未实现：隔离后端（凭据/网络/进程限制）不存在；文件级 worker-guard 已显式声明不称 OS 沙箱 |
+| AX5 回滚栅栏缺失 | SkillCatalog.activate 可解析任意归档版本：回滚后新激活已撤销 revision 仍被允许；翻转条件见 `test/skills-host.integration.mjs` 末段 Defect record 注释，待后续修复 |
+| planner 按会话计量 | 外部 planner 会话按会话粒度记 1 次 unknown 用量（R1.9 备注，wire-rev-F004），按轮计量为后续增强 |
+| tui ES2024 既有失败 | `tsconfig.host-source.json` 无法用 tsc 5.9.3 检查：上游 `packages/tui/src/utils.ts` 的 `v` 正则 flag 需 ES2024 target（TS1501，非 pi861 引入）；tsgo 为权威门（CI 与本地均绿，workflow 注释已载） |
+| O1 pgvector | 未实现且无装饰性开关；检索为词法/PG 全文基线 |
+| O3 多搜索后端 | SearchProvider 接缝已建，仅 "brave" 实现 |
+| R6.14 运维流程 | 备份/恢复未自动化、凭据委派服务未实现（仅内核） |
+| 其余受控内缺口 | R2.10 真流式（仍缓冲派发）、R1.1 策略逐层接线（内核能力已测，runtime 未暴露分层）、R6.17 "关键检查点未提交暂停执行边界"未接线、R5.6 官方 MCP SDK 评审未做、R6.16 中文/代码符号检索专项未补 |
+
+## 7. 下一条操作建议
+
+1. **推送 `a667d206d`**（快进 `origin/pi861-p2-integration` 与 `feat/pi861-runtime-v1`）以获得最后 4 个提交的 CI 覆盖；建议同时把 `skills-host.integration.mjs` 与 `goal-e2e.integration.mjs` 纳入 CI pi-host job 清单（当前 CI 只跑前两个宿主集成）。
+2. 修复 AX5 回滚栅栏（`SkillCatalog.activate` 拒绝已撤销 revision）并翻转 `skills-host.integration.mjs` 末段断言。
+3. P4 独立审核（未参与开发的子代理）按 [ACCEPTANCE_MATRIX.md](ACCEPTANCE_MATRIX.md) 逐行抽验后，再考虑真实模型/搜索/多节点授权项与 pgvector、R3.8 沙箱等增强。
+
+## 8. 台账使用约定（沿用）
+
+- 每次状态变更必须绑定新代码 SHA、更新 [ACCEPTANCE_MATRIX.md](ACCEPTANCE_MATRIX.md) 对应行、必要时同步 [REQUIREMENTS.md](REQUIREMENTS.md)（不得降低范围）。
 - 未跑与 skip 不计通过；fixture 只证协议与安全，不证真实模型任务质量。
 - 历史报告 [VERIFICATION.md](VERIFICATION.md) 保留为历史证据（绑定 90295c195 及更早），不作为当前 HEAD 通过证明。
