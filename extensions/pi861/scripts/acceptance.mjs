@@ -123,6 +123,10 @@ async function writeReport(report) {
 // --- deterministic checks ------------------------------------------------------
 
 async function runChecks(selected) {
+	if (selected && selected.length > 0 && !CHECKS.some((check) => selected.includes(check.name))) {
+		console.error(`--only matched no known check (known: ${CHECKS.map((check) => check.name).join(", ")})`);
+		process.exit(2);
+	}
 	const results = [];
 	for (const check of CHECKS) {
 		if (selected && !selected.includes(check.name)) continue;
