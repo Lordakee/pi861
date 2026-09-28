@@ -158,7 +158,7 @@ CI run <https://github.com/Lordakee/pi861/actions/runs/36317857198>（对应 `54
 | 编号 | 代码入口 | 测试 | 状态 | 缺口 / 备注 |
 | --- | --- | --- | --- | --- |
 | R7.1 | `index.ts`（命令+工具，未动本地工具集）、`src/search.ts`（独立适配） | host.test.mjs（disabled search has no model tool） | 受控协议验证通过 | — |
-| R7.2 | `src/search.ts`（固定端点/头/限额、provider 校验）、`index.ts`（env 配置） | search.test.mjs（11 用例：固定端点头、限额、畸形响应、取消不触网、"only implemented providers are reported and selectable" 等） | 受控协议验证通过 | SearXNG 开源后端 @ `d4b686982`（AGPLv3 自托管、无 API 密钥、固定实例出站）；**真实服务已验证**：本地 docker SearXNG 实例（127.0.0.1:8888）实测 webSearch 返回真实结果（provider=searxng、truncated 语义正常，2026-09-27）；Brave 保留可选付费（真实付费验收仍待授权）；默认仍关闭。 |
+| R7.2 | `src/search.ts`（固定端点/头/限额、provider 校验）、`index.ts`（env 配置） | search.test.mjs（11 用例：固定实例出站无凭据、限额、畸形响应、取消不触网、"only implemented providers are reported and selectable" 等） | 受控协议验证通过 | SearXNG 开源后端 @ `d4b686982`（AGPLv3 自托管、无 API 密钥、固定实例出站）；**真实服务已验证**：本地 docker SearXNG 实例（127.0.0.1:8888）实测 webSearch 返回真实结果（provider=searxng、truncated 语义正常，2026-09-27）；Brave 付费后端已移除（2026-09-28，用户决策只保留免费开源方案）；默认仍关闭。 |
 | R7.3 | `src/search.ts`（retrievedAt/truncated/错误不伪造） | search.test.mjs（malformed payload not reported as zero hits / truncated snippets marked） | 受控协议验证通过 | — |
 | R7.4 | `index.ts`（默认关闭）、`search.ts`（无密钥报错）、`web-read.ts:403-413`（网页读默认关闭 PI861_WEB_READ_ENABLED） | search.test.mjs（disabled or missing-key does not call backend）、web-read.test.mjs（disabled or unapproved reads never reach the network） | 受控协议验证通过 | 工具描述明示不外发私有内容（提示层约束）。 |
 | R7.5 | `src/search.ts`（限长/取消）、`src/web-read.ts`（限长/超时/取消） | search.test.mjs（oversized body stopped / cancelled never reaches network）、web-read.test.mjs（同型用例） | 受控协议验证通过 | — |
@@ -199,7 +199,7 @@ CI run <https://github.com/Lordakee/pi861/actions/runs/36317857198>（对应 `54
 | --- | --- | --- |
 | O1 pgvector | 未实现 | 无装饰性开关（检索为关键词/PG 全文基线，如实标注）。 |
 | O2 网页正文提取 | 受控协议验证通过 | M5 交付（`src/web-read.ts` extractText：线性上限、script 尾剥离），测试见 R7.6。 |
-| O3 多搜索后端 | 未实现 | SearchProvider 接缝 + supportedSearchProviders() 已建（M5），仅 "brave" 实现（fetch 注入为测试缝）。 |
+| O3 多搜索后端 | 未实现 | SearchProvider 接缝 + supportedSearchProviders() 保留（M5），现仅 "searxng" 单实现（Brave 已于 2026-09-28 移除，用户决策只保留免费开源方案；fetch 注入为测试缝）。 |
 | O4 源码宿主验证 | 受控协议验证通过 | CI job `pi-host-source` @ 542feb6f6 全绿（run 36317857198：tsgo 全量检查 + 源码宿主两个集成测试）；本地 @ a667d206d `tsgo --project tsconfig.host-source.json` 退出 0。已知限定：tsc 5.9.3 无法检查该配置（上游 tui ES2024 正则 flag），tsgo 为权威门（workflow 注释已载）。 |
 
 ## 4. 状态分布（@ a667d206d，109 条）
@@ -230,6 +230,6 @@ CI run <https://github.com/Lordakee/pi861/actions/runs/36317857198>（对应 `54
 | 项 | 现状 |
 | --- | --- |
 | 真实付费模型验收 | 未执行：全部模型路径为确定性本地 provider fixture（含 AX10）；真实用量归因/降级/接管仅 fixture 验证 |
-| 真实搜索后端 | 未执行：Brave 路径仅 HTTP fixture（fetch 注入）；无真实密钥联网验证 |
+| 真实搜索后端 | SearXNG 本地实例已实测（见 R7.2）；Brave 已移除，无真实密钥联网路径 |
 | 跨主机多节点 | 未执行：双 Worker/远程服务均为 loopback HTTP fixture；未验证真实多机/容器 |
 | 真实业务数据库 | postgres 新路径 CI 已绿（@ 542feb6f6，真实临时 PostgreSQL（现已 18）+ 受限角色，run 36317857198），但未接触真实业务库（数据量/并发/运维流程均未验证） |

@@ -20,8 +20,7 @@
 | 变量 | 读取位置 | 默认 | 语义 |
 | --- | --- | --- | --- |
 | `PI861_WEB_SEARCH_ENABLED` | `src/search.ts`（`searchOptionsFromEnv`，`index.ts` 调用） | 未设=关闭 | `1` 开启联网搜索（显式 opt-in）；后端选择见下两行 |
-| `PI861_SEARCH_SEARXNG_URL` | 同上 | 无 | 自托管 SearXNG 实例基地址（如 `http://127.0.0.1:8888`；**无 API 密钥**）；请求固定发往该实例 `search?format=json`（保留实例子路径）；未显式指定 provider 时优先于 Brave |
-| `BRAVE_SEARCH_API_KEY` | 同上 | 无 | Brave 订阅令牌（可选付费后端）；仅当未配置 SearXNG URL 时作为默认后端，缺失时搜索报错不伪造 |
+| `PI861_SEARCH_SEARXNG_URL` | 同上 | 无 | 自托管 SearXNG 实例基地址（如 `http://127.0.0.1:8888`；**无 API 密钥**）；唯一搜索后端，请求固定发往该实例 `search?format=json`（保留实例子路径）；缺失时搜索报错不伪造 |
 | `PI861_WEB_READ_ENABLED` | `src/web-read.ts`（`webReadOptionsFromEnv`） | 未设=关闭 | `1` 开启有界网页读取（显式 opt-in） |
 | `PI861_WEB_READ_HOSTS` | 同上 | 空 | 逗号分隔**公共主机**白名单：精确名或 `*.suffix` 通配；仅允许协议默认端口（https 443 / http 80），每跳经 DNS/SSRF 防护 |
 | `PI861_WEB_READ_INTERNAL_ENDPOINTS` | 同上 | 空 | 逗号分隔**受批内部端点**，精确 `scheme://host[:port]` 匹配（与公共主机不同的批准类型）；内部端点不做公共地址黑名单检查，但连接同样绑定已验证地址（防 DNS rebinding） |
@@ -62,7 +61,7 @@
 | 字段 | 类型/默认 | 说明 |
 | --- | --- | --- |
 | `managedGoal` | `boolean`，默认 false | true 时基础 /goal 与 goal_report 不注册（由完整 runtime 接管），防双注册 |
-| `search` | `SearchOptions`，默认取环境变量（`searchOptionsFromEnv`，见 2.1） | `{ enabled, provider?, apiKey?, searxngUrl?, maxResults?, maxResponseBytes?, timeoutMs?, fetch? }`；provider 可选 `"searxng"`（自托管 SearXNG，无需密钥）/`"brave"`（需 `apiKey`）；未显式指定时优先 SearXNG URL、其次 Brave key，两者都没有则报错列出可用配置；默认 maxResults=5、maxResponseBytes=262144、timeoutMs=15000；`fetch` 仅供测试注入 |
+| `search` | `SearchOptions`，默认取环境变量（`searchOptionsFromEnv`，见 2.1） | `{ enabled, provider?, searxngUrl?, maxResults?, maxResponseBytes?, timeoutMs?, fetch? }`；唯一后端为自托管 SearXNG（`provider` 仅可设 `"searxng"`，无需密钥），必须配置 `searxngUrl`，缺失则报错列出可用配置；默认 maxResults=5、maxResponseBytes=262144、timeoutMs=15000；`fetch` 仅供测试注入 |
 | `goalMaxRuns` | `number`，默认 20 | 基础 /goal 次数预算上限 |
 | `memory.backend` | `MemoryBackend`，默认 LocalMemory（会话分支快照） | 外部 backend（如 PostgresMemory）注入点 |
 | `memory.scope` | `string`，默认 `project:${PI861_PROJECT_ID}` | 外部 backend 必须显式给 scope；不给即拒绝恢复 |
@@ -225,12 +224,9 @@ ModelTarget 必填字段（`src/routing.ts`；缺一或非法即"Invalid or dupl
 
 ```sh
 pi -e ./extensions/pi861/index.ts
-# 可选搜索（Linux/macOS）——后端二选一：
+# 可选搜索（Linux/macOS）——免费开源自托管后端：
 export PI861_WEB_SEARCH_ENABLED=1
-# 开源后端：自托管 SearXNG 实例（无 API 密钥）
 export PI861_SEARCH_SEARXNG_URL='http://127.0.0.1:8888'
-# 或付费后端：Brave 订阅令牌
-export BRAVE_SEARCH_API_KEY='<由环境或密钥管理器注入>'
 # 可选有界网页读取（公共主机 + 受批内部端点）：
 export PI861_WEB_READ_ENABLED=1
 export PI861_WEB_READ_HOSTS='example.org,*.docs.example.org'

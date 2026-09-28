@@ -421,7 +421,7 @@ export function installPi861(pi: PiHost, options: Pi861Options = {}): void {
 			},
 		});
 	pi.registerCommand("web-search", {
-		description: "Search the web with the configured backend (SearXNG or Brave, explicit opt-in)",
+		description: "Search the web via the configured self-hosted SearXNG instance (explicit opt-in)",
 		handler: async (args, ctx) => {
 			try {
 				const payload = searchPayload(await webSearch(args, searchOptions));
