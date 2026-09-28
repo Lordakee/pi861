@@ -179,6 +179,7 @@ function failure(message: AssistantMessage, status: number): ModelFailure {
 	const text = message.errorMessage ?? "";
 	if (message.stopReason === "aborted") return new ModelFailure("cancelled");
 	if (status === 401 || status === 403) return new ModelFailure("auth");
+	if (status === 200 && /^\s*401[:,]|"code"\s*:\s*"401"/.test(text)) return new ModelFailure("auth");
 	if (/insufficient_quota|billing|credit.*exhaust/i.test(text)) return new ModelFailure("quota");
 	if (status === 429 || /rate.limit|too many requests/i.test(text)) return new ModelFailure("rate-limit");
 	if (
@@ -399,8 +400,13 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		// connection/progress hooks fire per event, tool arguments are gated at
 		// toolcall_end, and dispatch still happens only at the successful-response boundary.
 		const adapter = new StreamAttempt<AssistantMessage>(attempt, hooks);
+		// The wrapper provider's session-level credentials (a routing placeholder) must not
+		// shadow the target provider's own auth resolution in this nested streamSimple call:
+		// applyAuth prefers an explicit options.apiKey over the registry-resolved one.
+		const { apiKey: _inheritedKey, headers: _inheritedHeaders, env: _inheritedEnv, ...forwardOptions } =
+			requestOptions ?? {};
 		const stream = context.modelRegistry.streamSimple(model, transcript, {
-			...requestOptions,
+			...forwardOptions,
 			signal,
 			maxTokens: Math.min(maxTokens, model.maxTokens),
 			onResponse: async (response, requestModel) => {
