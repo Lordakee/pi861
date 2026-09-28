@@ -183,3 +183,5 @@ node --experimental-strip-types --test test/pi-host.integration.mjs
 本批为独立编写的新代码，未复制 OpenViking、gbrain 或第三方编排插件源码。
 借鉴项目的概念、接口边界与测试场景，不继承未验证的性能或安全承诺。
 按仓库许可处理；后续引入外部代码另行核对锁定版本及许可证。
+
+<!-- catalog-drift CI trigger: repository-check covers packages/ai catalog adaptations (2026-09-28) -->
