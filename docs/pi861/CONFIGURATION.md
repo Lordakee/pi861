@@ -15,7 +15,7 @@
 
 ## 2. 环境变量（以代码为准）
 
-### 2.1 基础入口与库层（index.ts / src/search.ts / src/web-read.ts）
+### 2.1 基础入口与库层（index.ts / src/search.ts / src/web-read.ts / src/web-crawl.ts）
 
 | 变量 | 读取位置 | 默认 | 语义 |
 | --- | --- | --- | --- |
@@ -23,7 +23,7 @@
 | `PI861_SEARCH_SEARXNG_URL` | 同上 | 无 | 自托管 SearXNG 实例基地址（如 `http://127.0.0.1:8888`；**无 API 密钥**）；唯一搜索后端，请求固定发往该实例 `search?format=json`（保留实例子路径）；缺失时搜索报错不伪造 |
 | `PI861_WEB_READ_ENABLED` | `src/web-read.ts`（`webReadOptionsFromEnv`） | 未设=关闭 | `1` 开启有界网页读取（显式 opt-in） |
 | `PI861_WEB_READ_HOSTS` | 同上 | 空 | 逗号分隔**公共主机**白名单：精确名或 `*.suffix` 通配；仅允许协议默认端口（https 443 / http 80），每跳经 DNS/SSRF 防护 |
-| `PI861_WEB_READ_INTERNAL_ENDPOINTS` | 同上 | 空 | 逗号分隔**受批内部端点**，精确 `scheme://host[:port]` 匹配（与公共主机不同的批准类型）；内部端点不做公共地址黑名单检查，但连接同样绑定已验证地址（防 DNS rebinding） |
+| `PI861_WEB_READ_INTERNAL_ENDPOINTS` | 同上 | 空 | 逗号分隔**受批内部端点**，精确 `scheme://host[:port]` 匹配（与公共主机不同的批准类型）；内部端点不做公共地址黑名单检查，但连接同样绑定已验证地址（防 DNS rebinding）；**爬取工具拒绝内部端点**（见 §9 网页爬取行） |
 | `PI861_AUTO_RECALL` | `index.ts`（installPi861） | 未设=开启 | `0` 关闭自动召回（before_agent_start） |
 | `PI861_AUTO_CAPTURE` | `index.ts`（installPi861） | 未设=开启 | `0` 关闭用户输入自动采集 |
 | `PI861_PROJECT_ID` | `index.ts`（restore） | `digest(cwd).slice(0,24)` | 稳定项目身份；未设置时用 cwd 哈希（仅适合本地试验） |
@@ -207,6 +207,7 @@ ModelTarget 必填字段（`src/routing.ts`；缺一或非法即"Invalid or dupl
 | --- | --- | --- | --- |
 | 联网搜索 | `PI861_WEB_SEARCH_ENABLED` / `Pi861Options.search.enabled` | 关 | 不注册搜索模型工具；/web-search 报错；无后端配置不伪造 |
 | 网页读取 | `PI861_WEB_READ_ENABLED` / `WebReadOptions.enabled` | 关 | `readWebPage` 报错（提示配置开关与主机审批）；未批主机/非默认端口/非白名单内容类型一律拒绝 |
+| 网页爬取（`pi861_web_crawl`） | 与网页读取共用 `PI861_WEB_READ_ENABLED` + `PI861_WEB_READ_HOSTS` | 关 | 未开启网页读取时不注册爬取工具。开启后：串行 BFS，从已批公共主机页面出发，默认同源（`sameHost=false` 时仍限公共主机白名单），**默认拒绝内部端点**；深度 0-3（默认 1）、页数 1-50（默认 10）、解压后总字节预算 1 KiB-8 MiB（默认 2 MiB，超限 `truncated:true` + `stopReason:"byte_budget"`）；请求间隔 250ms、首请求不等；URL 规范化去重（去 fragment、query 原样保留）；站外/未批链接跳过并记入 `skippedLinks`（有界）；每请求重走完整审批/DNS/IP/重定向逐跳复检链；**不读取也不遵循 robots.txt**；内容标注不可信 |
 | 自动召回 | `PI861_AUTO_RECALL` / options / `config.memory.autoRecall` | 开 | before_agent_start 不注入记忆上下文 |
 | 自动采集（输入） | `PI861_AUTO_CAPTURE` / options / `config.memory.autoCapture` | 开 | 用户输入不写候选记录 |
 | 自动采集（工具结果） | `config.memory.autoCapture`（runtime 侧，`tool_execution_end`） | 开 | tool_execution_end 不写 evidence 记录 |
@@ -227,7 +228,7 @@ pi -e ./extensions/pi861/index.ts
 # 可选搜索（Linux/macOS）——免费开源自托管后端：
 export PI861_WEB_SEARCH_ENABLED=1
 export PI861_SEARCH_SEARXNG_URL='http://127.0.0.1:8888'
-# 可选有界网页读取（公共主机 + 受批内部端点）：
+# 可选有界网页读取（公共主机 + 受批内部端点）；同开关亦启用有界同站爬取工具 pi861_web_crawl（仅公共主机，不读 robots.txt）：
 export PI861_WEB_READ_ENABLED=1
 export PI861_WEB_READ_HOSTS='example.org,*.docs.example.org'
 export PI861_WEB_READ_INTERNAL_ENDPOINTS='https://wiki.internal.acme.example'

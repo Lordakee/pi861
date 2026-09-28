@@ -66,6 +66,14 @@ export interface WebPageResult {
 	policy: { kind: "public" } | { kind: "internal-endpoint"; endpoint: string };
 	untrusted: true;
 }
+/** A fetched document before caching: the extracted page plus the bounded raw HTML it came from. */
+export interface WebDocument {
+	page: WebPageResult;
+	/** Final HTTP status of the 2xx response the page was extracted from. */
+	status: number;
+	/** Bounded decoded document body (at most the effective maxBytes), suitable for link extraction. */
+	html: string;
+}
 export interface AuthorizedTarget {
 	url: URL;
 	kind: "public" | "internal";
@@ -443,6 +451,38 @@ export function extractText(source: string, maxLength = 100_000): ExtractedConte
 	return { title, text: collapsed.slice(0, maxLength), truncated: collapsed.length > maxLength };
 }
 
+const MAX_LINKS_PER_PAGE = 200;
+
+/** Bounded extraction of absolute http(s) link targets from `<a href>` anchors of an HTML document. */
+export function extractLinks(html: string, baseUrl: string | URL): string[] {
+	const source = stripMarkupBlocks(html); // anchors inside scripts, styles or comments are not page links
+	const found: string[] = [];
+	const seen = new Set<string>();
+	const anchors = /<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
+	for (
+		let match = anchors.exec(source);
+		found.length < MAX_LINKS_PER_PAGE && match !== null;
+		match = anchors.exec(source)
+	) {
+		const raw = decodeEntities(match[1] ?? match[2] ?? match[3] ?? "").trim();
+		if (!raw || raw.startsWith("#")) continue;
+		let url: URL;
+		try {
+			url = new URL(raw, baseUrl);
+		} catch {
+			continue;
+		}
+		if (url.protocol !== "https:" && url.protocol !== "http:") continue; // mailto:, javascript:, data: ...
+		if (url.username || url.password) continue;
+		url.hash = ""; // a fragment never identifies a separate document
+		const normalized = url.toString(); // query stays as written: parameter order and repeats may carry meaning
+		if (seen.has(normalized)) continue;
+		seen.add(normalized);
+		found.push(normalized);
+	}
+	return found;
+}
+
 function isReadableContentType(contentType: string): boolean {
 	if (contentType.startsWith("text/")) return true;
 	return [
@@ -503,34 +543,47 @@ export function webReadOptionsFromEnv(env: Record<string, string | undefined> = 
 	};
 }
 
-/** Reads a web page under approval, SSRF, redirect, size, time and cancellation bounds. */
-export async function readWebPage(
-	rawUrl: string,
-	options: WebReadOptions,
-	signal?: AbortSignal,
-): Promise<WebPageResult> {
+interface WebReadLimits {
+	maxBytes: number;
+	timeoutMs: number;
+	maxRedirects: number;
+	cacheTtlMs: number;
+}
+
+/** Validates enablement, policy and numeric bounds; shared by the cached reader and the document fetcher. */
+function webReadLimits(options: WebReadOptions): WebReadLimits {
 	if (!options.enabled)
 		throw new Error("Web reading is disabled; configure PI861_WEB_READ_ENABLED=1 and host approvals");
 	if (!options.policy || !Array.isArray(options.policy.internal) || !Array.isArray(options.policy.publicHosts))
 		throw new Error("Web reading requires an endpoint policy");
-	const maxBytes = options.maxBytes ?? 262_144;
-	const timeoutMs = options.timeoutMs ?? 15_000;
-	const maxRedirects = options.maxRedirects ?? 3;
-	const cacheTtlMs = options.cacheTtlMs ?? 600_000;
+	const limits: WebReadLimits = {
+		maxBytes: options.maxBytes ?? 262_144,
+		timeoutMs: options.timeoutMs ?? 15_000,
+		maxRedirects: options.maxRedirects ?? 3,
+		cacheTtlMs: options.cacheTtlMs ?? 600_000,
+	};
 	if (
-		!Number.isSafeInteger(maxBytes) ||
-		maxBytes < 1024 ||
-		!Number.isSafeInteger(timeoutMs) ||
-		timeoutMs < 1 ||
-		!Number.isSafeInteger(maxRedirects) ||
-		maxRedirects < 0 ||
-		!Number.isSafeInteger(cacheTtlMs) ||
-		cacheTtlMs < 0
+		!Number.isSafeInteger(limits.maxBytes) ||
+		limits.maxBytes < 1024 ||
+		!Number.isSafeInteger(limits.timeoutMs) ||
+		limits.timeoutMs < 1 ||
+		!Number.isSafeInteger(limits.maxRedirects) ||
+		limits.maxRedirects < 0 ||
+		!Number.isSafeInteger(limits.cacheTtlMs) ||
+		limits.cacheTtlMs < 0
 	)
 		throw new Error("Invalid web read limits");
+	return limits;
+}
+
+/** Fetches a document through the complete request chain without any cache access. */
+export async function readWebDocument(
+	rawUrl: string,
+	options: WebReadOptions,
+	signal?: AbortSignal,
+): Promise<WebDocument> {
+	const { maxBytes, timeoutMs, maxRedirects } = webReadLimits(options);
 	signal?.throwIfAborted();
-	const cached = cacheGet(options, rawUrl, cacheTtlMs);
-	if (cached) return { ...cached, cache: "hit" };
 	const deadline = AbortSignal.timeout(timeoutMs);
 	const effective = signal ? AbortSignal.any([signal, deadline]) : deadline;
 	let current: string | URL = rawUrl;
@@ -605,8 +658,22 @@ export async function readWebPage(
 					: { kind: "internal-endpoint", endpoint: target.endpoint ?? "" },
 			untrusted: true,
 		};
-		cacheSet(options, rawUrl, page, cacheTtlMs);
 		effective.throwIfAborted();
-		return page;
+		return { page, status: response.status, html: read.text };
 	}
+}
+
+/** Reads a web page under approval, SSRF, redirect, size, time and cancellation bounds. */
+export async function readWebPage(
+	rawUrl: string,
+	options: WebReadOptions,
+	signal?: AbortSignal,
+): Promise<WebPageResult> {
+	const { cacheTtlMs } = webReadLimits(options);
+	signal?.throwIfAborted();
+	const cached = cacheGet(options, rawUrl, cacheTtlMs);
+	if (cached) return { ...cached, cache: "hit" };
+	const { page } = await readWebDocument(rawUrl, options, signal);
+	cacheSet(options, rawUrl, page, cacheTtlMs);
+	return page;
 }

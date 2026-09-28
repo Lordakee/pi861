@@ -3,8 +3,8 @@ import { test } from "node:test";
 import { createServer } from "node:http";
 import { gzipSync, brotliCompressSync, deflateSync } from "node:zlib";
 import {
-	authorizeTarget, defaultLookup, extractText, hostMatches, isBlockedAddress,
-	nodeTransport, readWebPage, webReadOptionsFromEnv,
+	authorizeTarget, defaultLookup, extractLinks, extractText, hostMatches, isBlockedAddress,
+	nodeTransport, readWebDocument, readWebPage, webReadOptionsFromEnv,
 } from "../src/web-read.ts";
 import { ControlledResults } from "../src/controlled-results.ts";
 
@@ -353,4 +353,58 @@ test("teredo and protocol-default ports are refused (M5 review fix)", async () =
     readWebPage("https://example.org:80/", { ...publicOptions(), lookup: lookupOf(["93.184.216.34"]) }),
     /protocol default/,
   );
+});
+
+test("readWebDocument returns the bounded raw document and final status without cache semantics", async () => {
+  const body = "<html><head><title>Raw Doc</title></head><body><a href='/next'>go</a><p>prose</p></body></html>";
+  const server = createServer((_req, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end(body); });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  try {
+    const options = internalOptions(port);
+    const first = await readWebDocument(`http://127.0.0.1:${port}/doc`, options);
+    const second = await readWebDocument(`http://127.0.0.1:${port}/doc`, options);
+    assert.equal(first.status, 200);
+    assert.equal(first.page.cache, "miss");
+    assert.ok(first.html.includes("<a href='/next'>")); // raw document, not extracted text
+    assert.equal(first.page.title, "Raw Doc");
+    assert.ok(first.page.text.includes("prose") && !first.page.text.includes("href"));
+    assert.equal(second.page.cache, "miss"); // document fetches never touch the page cache
+    const wrapped = await readWebPage(`http://127.0.0.1:${port}/doc`, options);
+    assert.equal(wrapped.cache, "miss"); // wrapper path still starts uncached
+  } finally { stopServer(server); }
+});
+
+test("extractLinks resolves, deduplicates and filters anchor targets", () => {
+  const html = [
+    `<a href="/a?b=1&amp;c=2">1</a>`,
+    `<a href="/a?b=1&c=2#sec">2</a>`, // same document: deduplicated after fragment removal
+    `<a href='https://example.org/a?c=2&b=1'>3</a>`, // query order is meaning: kept distinct
+    `<A HREF="/rel/../up">u</A>`, // case-insensitive tags, dot-segments normalized
+    `<a href="  /spaced  ">s</a>`,
+    `<a href="mailto:x@example.org">m</a>`,
+    `<a href="javascript:alert(1)">j</a>`,
+    `<a href="ftp://example.org/f">f</a>`,
+    `<a href="#top">t</a>`,
+    `<a href="https://u:p@example.org/cred">c</a>`,
+    `<a href="">e</a>`,
+    `<a>no-href</a>`,
+    `<script>var s = '<a href="/in-script">x</a>'</script>`,
+    `<!-- <a href="/in-comment">y</a> -->`,
+  ].join("\n");
+  assert.deepEqual(extractLinks(html, "http://example.org/dir/page"), [
+    "http://example.org/a?b=1&c=2",
+    "https://example.org/a?c=2&b=1",
+    "http://example.org/up",
+    "http://example.org/spaced",
+  ]);
+  assert.deepEqual(extractLinks("<a href='/x'>x</a>", "https://base.example/dir/"), ["https://base.example/x"]); // relative to the base
+});
+
+test("extractLinks caps candidates per page", () => {
+  const html = Array.from({ length: 400 }, (_v, i) => `<a href="/p${i}">l</a>`).join("");
+  const links = extractLinks(html, "http://example.org/");
+  assert.equal(links.length, 200);
+  assert.equal(links[0], "http://example.org/p0");
+  assert.equal(links[199], "http://example.org/p199");
 });
