@@ -49,6 +49,7 @@ CI run <https://github.com/Lordakee/pi861/actions/runs/36317857198>（对应 `54
 | G5 | `src/live/layered-memory.ts`（两段提交）、`src/live/store.ts:12`（锁内禁外部调用约束） | live-memory.test.mjs（withdrawal while extractor runs） | 受控协议验证通过 | — |
 | G6 | `runtime.ts:238-256`（hostPort 窄端口适配：事件名校验；capabilityPort 组合）、根 `tsconfig.json`/`biome.json`（`d2bff94d4` 起含 pi861 src/index/runtime） | tsconfig.host.json 全量检查（0 错误，L3）+ 根 `npm run check`（@ a667d206d 退出 0）+ 三个宿主集成测试（本地 3/3） | 受控协议验证通过 | 根检查盲区已收口（`d2bff94d4`：根 tsconfig 含 extensions/pi861/src 与 index.ts，runtime.ts 仍归 tsconfig.host.json 权威检查；biome 覆盖 src/index/runtime）；CI repository-check @ 542feb6f6 绿。 |
 | G7 | 测试实现本身（无密钥路径；`SearchOptions.fetch`、fixtures 注入） | search.test.mjs（disabled/missing-key 不触网）等 | 受控协议验证通过 | 过程性条目：约束测试编写方式。 |
+| G9 | `src/postgres.ts`（readTransaction 瞬态重试）、`src/search.ts`（多实例 failover）、`src/live/mcp.ts`（断连 dirty 重建） | postgres/search/live-mcp 测试（注入缝瞬态注入） | 受控协议验证通过 | 外部依赖短窗口更新容忍 @ `626c53823`：PG 只读连接类瞬态有界重试（RLS 授权重跑）；SearXNG 多实例（仅网络/超时/429/5xx）；MCP 断连下次 tools/list 重建，tools/call unknown 不自动重派；B/C 级（读缓存/故障转移/Worker 滚动）为独立后续项目。 |
 | G8 | `runtime.ts:64,192`（urlEnv）、`runtime.ts:40`（tokenEnv）、`examples/postgres-extension.mjs` | — | 已接入 | 设计约束无专项测试；配置文件中不出现明文密钥。 |
 
 ### 3.2 R1 多模型执行策略
