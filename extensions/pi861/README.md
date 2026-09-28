@@ -8,7 +8,7 @@
 | 部分 | 状态 |
 | --- | --- |
 | `/goal` | 已实现 Pi 生命周期适配、次数限额、暂停/恢复/修改、证据报告、人工接受；通过模拟宿主测试及真实 Pi 0.86.1 无模型 RPC 加载/命令冒烟；真实模型目标推进仍未验证。 |
-| 联网搜索 | 已实现 Brave HTTP 适配与命令，默认关闭；固定地址、超时、取消、大小限制、来源和截断信息。HTTP 用模拟响应测试，未使用真实 API Key。 |
+| 联网搜索 | 已实现 SearXNG 自托管后端与命令（Brave 付费后端已移除），默认关闭；固定实例地址、超时、取消、大小限制、来源和截断信息。HTTP 用模拟响应测试，本地实例已实测。 |
 | 自动记忆 | 已实现用户输入候选记录、关键词召回、手动确认/撤回、分层读取预算及分支恢复。尚无模型驱动的长期经验提炼、向量索引和自动摘要。 |
 | PostgreSQL | SQL 迁移与事务适配已实现，支持外部连接池；事务契约及真实 PostgreSQL 17 集成测试通过。不是完整认证服务。 |
 | 模型路由/故障恢复 | 可执行、已测试的选择策略、状态机和缓冲推理适配接口；尚未拦截 Pi 真实流式生成，也未连接健康探测定时器。 |
@@ -68,9 +68,8 @@ Linux/macOS：
 
 ```sh
 export PI861_WEB_SEARCH_ENABLED=1
-# 后端二选一：自托管 SearXNG（无 API 密钥）或 Brave
+# 免费开源自托管后端：SearXNG 实例（无 API 密钥）
 export PI861_SEARCH_SEARXNG_URL='http://127.0.0.1:8888'
-# 或 export BRAVE_SEARCH_API_KEY='<由环境或密钥管理器注入>'
 pi -e ./extensions/pi861/index.ts
 ```
 
@@ -79,16 +78,13 @@ PowerShell：
 ```powershell
 $env:PI861_WEB_SEARCH_ENABLED = '1'
 $env:PI861_SEARCH_SEARXNG_URL = 'http://127.0.0.1:8888'
-# 或 $env:BRAVE_SEARCH_API_KEY = '<由环境或密钥管理器注入>'
 pi -e ./extensions/pi861/index.ts
 ```
 
 使用 `/web-search PostgreSQL row level security` 或模型工具 `pi861_web_search`。
-未显式指定 provider 时优先使用配置的 SearXNG 实例（固定出站地址，无密钥），其次 Brave；两者都没有时报错，不伪造结果。
+仅支持自托管 SearXNG（固定出站地址，无密钥）；未配置实例 URL 时报错，不伪造结果。
 不要在查询中包含私有代码、凭据或未经授权的个人资料。
 默认禁用。首版未实现网页全文读取与其他搜索供应商。
-Brave HTTP 参数按其官方接口编写：
-https://api-dashboard.search.brave.com/app/documentation/web-search
 SearXNG 使用实例的 `search?format=json` 接口：
 https://docs.searxng.org/user/configured_engines.html
 

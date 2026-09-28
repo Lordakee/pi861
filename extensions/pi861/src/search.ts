@@ -16,8 +16,7 @@ export interface SearchResult {
 export interface SearchOptions {
 	enabled: boolean;
 	/** Backend id; only providers returned by supportedSearchProviders() are implemented. */
-	provider?: string;
-	apiKey?: string;
+	provider?: "searxng";
 	/** Base URL of a self-hosted SearXNG instance (no API key); requests go only to this instance. */
 	searxngUrl?: string;
 	maxResults?: number;
@@ -27,7 +26,6 @@ export interface SearchOptions {
 }
 /** Everything a provider implementation needs; the fetch seam keeps backends replaceable. */
 export interface SearchExecution {
-	apiKey: string;
 	searxngUrl?: string;
 	maxResults: number;
 	maxResponseBytes: number;
@@ -95,12 +93,8 @@ async function fetchJson(
 	effectiveSignal.throwIfAborted();
 	return json;
 }
-/** Shared hit mapping; the snippet field differs per backend (Brave "description", SearXNG "content"). */
-function collectHits(
-	hits: unknown[],
-	execution: SearchExecution,
-	snippetKey: "description" | "content",
-): { results: SearchHit[]; truncated: boolean } {
+/** Shared hit mapping; the SearXNG snippet field is "content". */
+function collectHits(hits: unknown[], execution: SearchExecution): { results: SearchHit[]; truncated: boolean } {
 	const results: SearchHit[] = [];
 	let truncated = hits.length > execution.maxResults;
 	for (const hit of hits.slice(0, execution.maxResults)) {
@@ -118,35 +112,15 @@ function collectHits(
 			continue;
 		}
 		const title = clean(item.title, 300);
-		const snippet = clean(item[snippetKey], 2000);
+		const snippet = clean(item.content, 2000);
 		if (
 			(typeof item.title === "string" && item.title.length > 300) ||
-			(typeof item[snippetKey] === "string" && item[snippetKey].length > 2000)
+			(typeof item.content === "string" && item.content.length > 2000)
 		)
 			truncated = true;
 		results.push({ title, url: url.toString(), snippet });
 	}
 	return { results, truncated };
-}
-async function braveSearch(query: string, execution: SearchExecution, signal?: AbortSignal): Promise<SearchResult> {
-	const trimmed = checkQuery(query);
-	const endpoint = new URL("https://api.search.brave.com/res/v1/web/search");
-	endpoint.searchParams.set("q", trimmed);
-	endpoint.searchParams.set("count", String(execution.maxResults));
-	const json = record(
-		await fetchJson(
-			endpoint,
-			{ Accept: "application/json", "X-Subscription-Token": execution.apiKey },
-			execution,
-			signal,
-		),
-	);
-	const web = record(json?.web);
-	const hits = web?.results;
-	if (hits !== undefined && !Array.isArray(hits)) throw new Error("Malformed search response");
-	if (!json || !web) throw new Error("Search response lacks web results");
-	const { results, truncated } = collectHits(Array.isArray(hits) ? hits : [], execution, "description");
-	return { query: trimmed, provider: "brave", retrievedAt: new Date().toISOString(), results, truncated };
 }
 /** SearXNG (AGPLv3, self-hosted): no API key; every request goes only to the configured instance. */
 async function searxngSearch(query: string, execution: SearchExecution, signal?: AbortSignal): Promise<SearchResult> {
@@ -166,32 +140,23 @@ async function searxngSearch(query: string, execution: SearchExecution, signal?:
 	const hits = json?.results;
 	if (hits !== undefined && !Array.isArray(hits)) throw new Error("Malformed search response");
 	if (!json || hits === undefined) throw new Error("Search response lacks results");
-	const { results, truncated } = collectHits(Array.isArray(hits) ? hits : [], execution, "content");
+	const { results, truncated } = collectHits(Array.isArray(hits) ? hits : [], execution);
 	return { query: trimmed, provider: "searxng", retrievedAt: new Date().toISOString(), results, truncated };
 }
-export const braveSearchProvider: SearchProvider = { id: "brave", search: braveSearch };
 export const searxngSearchProvider: SearchProvider = { id: "searxng", search: searxngSearch };
 /** Accurate list of implemented search backends; adding a name here requires an implementation. */
 export function supportedSearchProviders(): string[] {
-	return ["searxng", "brave"];
+	return ["searxng"];
 }
 export function resolveSearchProvider(id: string | undefined): SearchProvider {
-	if (id === "searxng") return searxngSearchProvider;
-	if (id === undefined || id === "brave") return braveSearchProvider;
+	if (id === undefined || id === "searxng") return searxngSearchProvider;
 	throw new Error(`Unsupported search provider "${id}"; implemented: ${supportedSearchProviders().join(", ")}`);
 }
 export async function webSearch(query: string, options: SearchOptions, signal?: AbortSignal): Promise<SearchResult> {
 	if (!options.enabled) throw new Error("Web search is disabled; configure PI861_WEB_SEARCH_ENABLED=1");
 	const searxngUrl = options.searxngUrl?.trim();
-	const apiKey = options.apiKey?.trim();
-	if (options.provider === undefined && !searxngUrl && !apiKey)
-		throw new Error(
-			"No search backend configured; set PI861_SEARCH_SEARXNG_URL (self-hosted SearXNG, no API key) or BRAVE_SEARCH_API_KEY (Brave)",
-		);
-	// No explicit provider: prefer the key-less self-hosted backend, fall back to Brave.
-	const provider = resolveSearchProvider(options.provider ?? (searxngUrl ? "searxng" : "brave"));
-	if (provider.id === "searxng" && !searxngUrl) throw new Error("Missing PI861_SEARCH_SEARXNG_URL");
-	if (provider.id === "brave" && !apiKey) throw new Error("Missing BRAVE_SEARCH_API_KEY");
+	if (!searxngUrl) throw new Error("No search backend configured; set PI861_SEARCH_SEARXNG_URL");
+	const provider = resolveSearchProvider(options.provider);
 	const count = options.maxResults ?? 5;
 	const maxBytes = options.maxResponseBytes ?? 262_144;
 	const timeoutMs = options.timeoutMs ?? 15_000;
@@ -208,7 +173,6 @@ export async function webSearch(query: string, options: SearchOptions, signal?: 
 	return provider.search(
 		query,
 		{
-			apiKey: options.apiKey?.trim() ?? "",
 			searxngUrl,
 			maxResults: count,
 			maxResponseBytes: maxBytes,
@@ -222,7 +186,6 @@ export async function webSearch(query: string, options: SearchOptions, signal?: 
 export function searchOptionsFromEnv(env: Record<string, string | undefined> = process.env): SearchOptions {
 	return {
 		enabled: env.PI861_WEB_SEARCH_ENABLED === "1",
-		apiKey: env.BRAVE_SEARCH_API_KEY,
 		searxngUrl: env.PI861_SEARCH_SEARXNG_URL?.trim() || undefined,
 	};
 }
