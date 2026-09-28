@@ -403,8 +403,12 @@ export default function runtimeExtension(pi: ExtensionAPI): void {
 		// The wrapper provider's session-level credentials (a routing placeholder) must not
 		// shadow the target provider's own auth resolution in this nested streamSimple call:
 		// applyAuth prefers an explicit options.apiKey over the registry-resolved one.
-		const { apiKey: _inheritedKey, headers: _inheritedHeaders, env: _inheritedEnv, ...forwardOptions } =
-			requestOptions ?? {};
+		const {
+			apiKey: _inheritedKey,
+			headers: _inheritedHeaders,
+			env: _inheritedEnv,
+			...forwardOptions
+		} = requestOptions ?? {};
 		const stream = context.modelRegistry.streamSimple(model, transcript, {
 			...forwardOptions,
 			signal,
