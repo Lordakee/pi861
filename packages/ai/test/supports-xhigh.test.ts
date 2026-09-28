@@ -106,8 +106,10 @@ describe("getSupportedThinkingLevels", () => {
 		expect(getSupportedThinkingLevels(model!)).toEqual(["low", "high", "max"]);
 	});
 
-	it("includes only high plus off for OpenCode Go Kimi K2.6", () => {
-		const model = getModel("opencode-go", "kimi-k2.6");
+	it("includes only high plus off for OpenCode Go Hy4 preview", () => {
+		// Catalog drift: kimi-k2.6 left opencode-go; hy4-preview is the listed model whose
+		// thinkingLevelMap still yields exactly off plus high.
+		const model = getModel("opencode-go", "hy4-preview");
 		expect(model).toBeDefined();
 		expect(getSupportedThinkingLevels(model!)).toEqual(["off", "high"]);
 	});
