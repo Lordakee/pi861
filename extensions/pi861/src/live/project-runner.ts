@@ -11,6 +11,8 @@ import type { RemoteWorkerClient } from "./remote-worker.ts";
 import type { CheckCommand, Workspace, Workspaces } from "./workspace.ts";
 
 const execute = promisify(execFile);
+/** Storage contention a later attempt can clear; any other heartbeat verdict (stale/foreign lease, inactive project) is definitive. */
+const TRANSIENT_HEARTBEAT = /lock unavailable|timeout/i;
 export interface ProjectWorkerOptions {
 	identity: WorkerIdentity;
 	process?: (workspace: Workspace, execution: ExecutionSpec) => ProcessSpec;
@@ -138,11 +140,10 @@ export class ProjectRunner {
 		const local = new AbortController(),
 			signal = AbortSignal.any([outer, local.signal, AbortSignal.timeout(this.options.maxTaskMs ?? 600_000)]);
 		let session: PiRpcSession | undefined;
+		let phase = "execution"; // failure reporting names the stage that threw, not a uniform mask
 		const timer = setInterval(
 			() => {
-				void this.options.coordinator
-					.heartbeat(worker.identity.id, lease, randomUUID(), leaseMs)
-					.catch((error: unknown) => local.abort(error));
+				void this.heartbeatWithRetry(worker.identity.id, lease, leaseMs, local);
 			},
 			Math.max(10, Math.floor(leaseMs / 3)),
 		);
@@ -202,11 +203,14 @@ export class ProjectRunner {
 				commit = "";
 			}
 			signal.throwIfAborted();
+			phase = "validation";
 			const paths = await this.options.workspaces.changed(workspace, task.writeScopes);
 			const evidence = await this.options.workspaces.check(workspace, checks, signal);
 			if (this.options.audit && !(await this.options.audit(task, workspace, result, signal)))
 				throw new Error("Independent reviewer rejected candidate");
+			phase = "commit";
 			if (!commit) commit = await this.options.workspaces.commit(workspace, paths, task.id);
+			phase = "submit";
 			await this.options.coordinator.submit(
 				worker.identity.id,
 				lease,
@@ -251,10 +255,17 @@ export class ProjectRunner {
 			// callback and permanently block all integration. This task still awaits integrate below,
 			// so its own failure is contained to this merge (blocked task + tracked repair entry).
 			this.integrationTail = integrate.catch(() => {});
+			phase = "integration";
 			await integrate;
-		} catch {
+		} catch (error) {
+			// Keep the original failure with its phase: the operator must see why, not a uniform mask.
+			// Prefer the initiating abort reason over derived noise ("Process closed by owner" etc.).
+			const failure = signal.aborted && signal.reason !== error ? signal.reason : error;
+			console.error(`[pi861] task ${task.id} failed during ${phase}:`, failure);
+			if (failure !== error) console.error(`[pi861] immediate error for task ${task.id}:`, error);
+			const reason = `${phase} failed: ${failure instanceof Error ? failure.message : String(failure)}`;
 			await this.options.coordinator
-				.block(lease, "Execution or validation failed; inspect preserved workspace before retry", randomUUID())
+				.block(lease, `${reason}; inspect preserved workspace before retry`, randomUUID())
 				.catch(() => {});
 			this.options.onProgress?.({
 				taskId: task.id,
@@ -263,7 +274,37 @@ export class ProjectRunner {
 			});
 		} finally {
 			clearInterval(timer);
+			local.abort(); // stops in-flight heartbeat retries once the execution has settled
 			await session?.close().catch(() => {});
+		}
+	}
+	/**
+	 * Transient storage contention (lock timeout, IO stall) is retried with backoff while the
+	 * lease is still renewably alive; a definitive verdict aborts the worker immediately.
+	 */
+	private async heartbeatWithRetry(
+		workerId: string,
+		lease: Lease,
+		leaseMs: number,
+		local: AbortController,
+	): Promise<void> {
+		for (let attempt = 1; ; attempt++) {
+			try {
+				await this.options.coordinator.heartbeat(workerId, lease, randomUUID(), leaseMs);
+				return;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (!TRANSIENT_HEARTBEAT.test(message) || attempt >= 3) {
+					console.error(`[pi861] heartbeat for task ${lease.taskId} failed (attempt ${attempt}):`, error);
+					local.abort(error);
+					return;
+				}
+				console.error(
+					`[pi861] heartbeat for task ${lease.taskId} transient contention (attempt ${attempt}/3): ${message}`,
+				);
+				await sleep(2000);
+				if (local.signal.aborted) return; // execution settled or aborted while backing off
+			}
 		}
 	}
 	private async loop(signal: AbortSignal): Promise<void> {

@@ -45,7 +45,7 @@ export class FileStateStore<T> implements StateStore<T> {
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 				if (Date.now() - start >= this.timeoutMs)
-					throw new Error("State lock unavailable; inspect abandoned owner before recovery");
+					throw new Error(`State lock unavailable for ${this.path}; inspect abandoned owner before recovery`);
 				await sleep(10);
 			}
 		}

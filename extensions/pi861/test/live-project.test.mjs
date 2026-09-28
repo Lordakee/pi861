@@ -343,3 +343,38 @@ test("project goal verbs cover edit, budget, explain and status",async()=>{
  assert.equal((await coordinator.state()).status,"active");
  }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
+test("heartbeat retries transient lock contention and the task still completes",{timeout:30000},async()=>{
+ const {root,path}=await repo();
+ try{
+ const workspace=new Workspaces(path,join(root,"trees"));const base=await workspace.head();
+ const coordinator=new ProjectCoordinator(new FileStateStore(join(root,"state.json"),emptyProject("fixture")),{maxConcurrent:1,maxAttempts:2});
+ await coordinator.create("resilient goal",base,[spec("A")]);
+ const real=coordinator.heartbeat.bind(coordinator);let calls=0;
+ coordinator.heartbeat=async(workerId,lease,requestId,leaseMs)=>{ // first beat loses the store lock, later beats succeed
+  if(calls++===0)throw new Error(`State lock unavailable for ${join(root,"state.json")}`);
+  return real(workerId,lease,requestId,leaseMs);
+ };
+ const integration=await workspace.create("integration",1,base);
+ const runner=new ProjectRunner({coordinator,workspaces:workspace,integration,checks:[pass()],workers:[worker()],leaseMs:600});
+ await runner.start();
+ assert.ok(calls>=2,"heartbeat must have fired again after the transient failure");
+ assert.equal((await coordinator.state()).status,"review");
+ assert.equal(await readFile(join(integration.path,"a.txt"),"utf8"),"A","task must complete despite one lock timeout");
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
+});
+test("definitive heartbeat failure aborts the worker with the original reason",{timeout:30000},async()=>{
+ const {root,path}=await repo();
+ try{
+ const workspace=new Workspaces(path,join(root,"trees"));const base=await workspace.head();
+ const coordinator=new ProjectCoordinator(new FileStateStore(join(root,"state.json"),emptyProject("fixture")),{maxConcurrent:1,maxAttempts:2});
+ await coordinator.create("fragile goal",base,[spec("B")]); // fixture pauses 300ms on B so a heartbeat fires mid-execution
+ coordinator.heartbeat=async()=>{throw new Error("Stale or expired execution lease");};
+ const integration=await workspace.create("integration",1,base);
+ const runner=new ProjectRunner({coordinator,workspaces:workspace,integration,checks:[pass()],workers:[worker()],leaseMs:600,idlePollMs:100});
+ const settled=runner.start();
+ await waitFor(async()=>(await coordinator.state()).board.tasks[0].status==="blocked");
+ assert.match((await coordinator.state()).board.tasks[0].reason,/execution failed: Stale or expired execution lease/);
+ await runner.pause();
+ await settled;
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
+});
