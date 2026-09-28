@@ -65,6 +65,39 @@ test("a child that cannot start fails pending requests on both platforms", async
 	}
 });
 
+// request() used to cap every call at its 30s fallback even when the caller's signal allowed
+// longer, killing legitimate multi-minute turns. The fixture holds its reply for 35s — past the
+// old 30s cap — and the caller's 60s signal must remain the sole deadline.
+test("a caller signal outlives the fallback timeout and stays the sole deadline", { timeout: 60_000 }, async () => {
+	const { root, cwd } = spacedRoot();
+	try {
+		const process_ = new LineProcess({ command: process.execPath, args: [fixture], cwd });
+		try {
+			const response = await process_.request({ type: "delay", delayMs: 35_000 }, AbortSignal.timeout(60_000));
+			assert.equal(response.type, "response"); // resolved by the delayed reply, not aborted at 30s
+		} finally {
+			await process_.close(); // the fixture never exits on its own; never leak it past a failure
+		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("without a caller signal the fallback timeout still guards the request", async () => {
+	const { root, cwd } = spacedRoot();
+	try {
+		const process_ = new LineProcess({ command: process.execPath, args: [fixture], cwd });
+		try {
+			// Fixture replies after 2s; the 100ms fallback must abort first.
+			await assert.rejects(process_.request({ type: "delay", delayMs: 2_000 }, undefined, 100), /timeout/i);
+		} finally {
+			await process_.close();
+		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 // POSIX sends SIGTERM to the child's whole process group (LineProcess spawns detached there).
 // Windows kill semantics terminate the direct child only — no process groups exist — so this
 // assertion is skipped there rather than approximated.

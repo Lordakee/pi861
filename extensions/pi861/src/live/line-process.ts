@@ -81,12 +81,14 @@ export class LineProcess {
 	}
 	async request(
 		value: Record<string, unknown>,
-		signal: AbortSignal,
+		signal?: AbortSignal,
 		timeoutMs = 30_000,
 	): Promise<Record<string, unknown>> {
-		signal.throwIfAborted();
+		// A caller signal is the sole deadline: an out-of-process turn can legitimately outlive
+		// any fixed cap, so the fallback timeout only guards callers that pass no signal.
+		const effective = signal ?? AbortSignal.timeout(timeoutMs);
+		effective.throwIfAborted();
 		const id = randomUUID();
-		const effective = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
 		let listener: (() => void) | undefined;
 		try {
 			return await new Promise<Record<string, unknown>>((resolve, reject) => {

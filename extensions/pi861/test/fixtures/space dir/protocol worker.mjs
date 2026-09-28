@@ -14,6 +14,14 @@ process.stdin.on("data", (chunk) => {
 		if (!line.trim()) continue;
 		const request = JSON.parse(line);
 		if (!request.id || request.type === "silence") continue; // silence: reserved for pending-close tests
+		if (request.type === "delay") {
+			// Held reply: lets tests prove a caller signal outlives request()'s fallback timeout.
+			setTimeout(
+				() => process.stdout.write(`${JSON.stringify({ type: "response", id: request.id })}\n`),
+				request.delayMs,
+			);
+			continue;
+		}
 		const payload =
 			request.type === "inspect"
 				? { cwd: process.cwd(), argv: process.argv, data: readFileSync(request.path, "utf8") }

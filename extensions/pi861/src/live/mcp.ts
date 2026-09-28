@@ -296,9 +296,10 @@ export class McpClient {
 		signal.addEventListener("abort", propagateCancel, { once: true });
 		let reply: Record<string, unknown> | undefined;
 		try {
-			reply = this.process
-				? await this.process.request(payload, signal, this.server.timeoutMs ?? 30_000)
-				: await this.http(payload, signal);
+			// request() treats a caller signal as the sole deadline, so the per-server timeout
+			// is composed here rather than delegated to the LineProcess fallback.
+			const deadline = AbortSignal.any([signal, AbortSignal.timeout(this.server.timeoutMs ?? 30_000)]);
+			reply = this.process ? await this.process.request(payload, deadline) : await this.http(payload, signal);
 		} catch (error) {
 			if (error instanceof McpFailure) throw error;
 			throw new McpFailure(
