@@ -90,6 +90,9 @@ export class McpClient {
 			}
 		}
 		if (event.type === "process_error") {
+			// Established stdio connection lost (process exit or pipe failure, e.g. an external tool
+			// being updated): mark dirty so the next tools/list rebuilds through the bounded reconnect
+			// in establish(). An in-flight tools/call keeps its "unknown" outcome and is never redispatched.
 			this.connected = undefined;
 			this.dirty = true;
 		}
@@ -206,6 +209,9 @@ export class McpClient {
 		if (!response.ok) {
 			await response.body?.cancel();
 			if (response.status === 404) {
+				// HTTP session invalidated (server restarted or upgraded): the established connection is
+				// gone. Clear it so the next tools/list re-initializes with a fresh session; a tools/call
+				// that hit the 404 stays classified "unknown" and is never replayed.
 				this.session = undefined;
 				this.connected = undefined;
 				this.dirty = true;
@@ -354,7 +360,10 @@ export class McpClient {
 		if (!tool || tool.schemaHash !== schemaHash)
 			throw new McpFailure("MCP schema changed; reactivate the skill", "not_dispatched");
 		signal.throwIfAborted();
-		return this.raw("tools/call", { name, arguments: args }, signal); // Deliberately never retry.
+		// Deliberately never retried: a tools/call transport failure is classified "unknown" (dispatch
+		// state uncertain even when the write failed) so callers reconcile through trusted queries
+		// instead of re-executing side effects. Only connection establishment and tools/list rebuild.
+		return this.raw("tools/call", { name, arguments: args }, signal);
 	}
 	close(): void {
 		this.teardown();

@@ -83,6 +83,9 @@ pi -e ./extensions/pi861/index.ts
 
 使用 `/web-search PostgreSQL row level security` 或模型工具 `pi861_web_search`。
 仅支持自托管 SearXNG（固定出站地址，无密钥）；未配置实例 URL 时报错，不伪造结果。
+`PI861_SEARCH_SEARXNG_URL` 支持逗号分隔多实例，按序逐个尝试；仅网络错误、超时、429/5xx
+触发重试，总尝试数（默认 2 次重试）与总时限（默认 30 秒）有界；实例切换只换传输端点，
+不改变查询授权。
 不要在查询中包含私有代码、凭据或未经授权的个人资料。
 默认禁用。首版未实现网页全文读取与其他搜索供应商。
 SearXNG 使用实例的 `search?format=json` 接口：

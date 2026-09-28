@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { enforceDeploymentMode, McpClient } from "../src/live/mcp.ts";
+import { enforceDeploymentMode, McpClient, McpFailure } from "../src/live/mcp.ts";
 import { OperationJournal } from "../src/live/operations.ts";
 import { FileStateStore } from "../src/live/store.ts";
 const signal = () => new AbortController().signal;
@@ -125,4 +125,74 @@ test("deployment modes: trusted-local vs production-isolated boundaries (R5.11)"
   assert.throws(() => enforceDeploymentMode("production-isolated", [stdio]), /HTTPS/);
   assert.throws(() => enforceDeploymentMode("production-isolated", [loopback]), /HTTPS/);
   assert.doesNotThrow(() => enforceDeploymentMode("production-isolated", [{ id: "r", accountId: "a", transport: { kind: "http", url: "https://mcp.example.com/mcp" } }]));
+});
+test("established stdio connection loss marks dirty and the next tools/list rebuilds", async t => {
+  const directory = mkdtempSync(join(tmpdir(), "pi861-restart-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const log = join(directory, "mcp.log");
+  const client = new McpClient({ id: "restart", accountId: "t", transport: { kind: "stdio", process: {
+    command: process.execPath, args: [fileURLToPath(new URL("./fixtures/mcp-restart.mjs", import.meta.url))], cwd: process.cwd(),
+    env: { PI861_MCP_MODE: "exit-after-list", PI861_MCP_LOG: log } } } });
+  t.after(() => client.close());
+  assert.equal((await client.tools(signal())).length, 1); // established and listed once
+  const initializes = () => {
+    try { return (readFileSync(log, "utf8").match(/initialize/g) ?? []).length; } catch { return 0; }
+  };
+  // The fixture exits right after the first list; poll until the client rebuilt through reconnect.
+  let rebuilt = initializes() >= 2;
+  for (let i = 0; i < 20 && !rebuilt; i++) {
+    try { await client.tools(signal(), true); } catch { /* transport may fail while the dead process tears down */ }
+    rebuilt = initializes() >= 2;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.ok(rebuilt, "tools/list did not rebuild after the established connection broke");
+  assert.equal((await client.tools(signal())).length, 1);
+});
+test("HTTP session invalidation (404) fails the current list, then rebuilds on a fresh session", async t => {
+  let session = "s-1", initializes = 0;
+  const server = createServer((req, res) => {
+    let body = ""; req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      const input = JSON.parse(body);
+      if (input.method === "initialize") {
+        initializes++; session = `s-${initializes}`;
+        res.setHeader("Mcp-Session-Id", session); res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: input.id, result: { protocolVersion: "2025-11-25", capabilities: { tools: {} } } }));
+        return;
+      }
+      if (req.headers["mcp-session-id"] !== session) { res.writeHead(404).end(); return; } // stale session: server restarted
+      const result = input.method === "tools/list" ? { tools: [{ name: "lookup", inputSchema: schema }] } : { content: [{ type: "text", text: "ok" }] };
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: input.id, result }));
+    });
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening"); t.after(() => server.close());
+  const client = new McpClient({ id: "http404", accountId: "t", transport: { kind: "http", url: `http://127.0.0.1:${server.address().port}/mcp`, allowLoopbackHttp: true } });
+  t.after(() => client.close());
+  assert.equal((await client.tools(signal())).length, 1);
+  assert.equal(initializes, 1);
+  session = "invalidated"; // simulate a server restart that dropped the session
+  await assert.rejects(client.tools(signal(), true), (error) => error instanceof McpFailure && error.outcome === "not_dispatched" && /HTTP 404/.test(error.message));
+  assert.equal((await client.tools(signal(), true)).length, 1); // dirty session cleared: fresh initialize plus list
+  assert.equal(initializes, 2);
+});
+test("tools/call transport loss classifies unknown and is never redispatched", async t => {
+  const directory = mkdtempSync(join(tmpdir(), "pi861-crash-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const ledger = join(directory, "ledger.jsonl");
+  const client = new McpClient({ id: "crash", accountId: "t", transport: { kind: "stdio", process: {
+    command: process.execPath, args: [fileURLToPath(new URL("./fixtures/mcp-restart.mjs", import.meta.url))], cwd: process.cwd(),
+    env: { PI861_MCP_MODE: "crash-on-call", PI861_MCP_LEDGER: ledger } } } });
+  t.after(() => client.close());
+  const [tool] = await client.tools(signal());
+  // A failure before dispatch classifies "not_dispatched" ...
+  await assert.rejects(client.call("lookup", { project: "p" }, "stale-hash", signal()),
+    (error) => error instanceof McpFailure && error.outcome === "not_dispatched");
+  // ... while a dispatch followed by transport loss stays "unknown" and is not retried.
+  await assert.rejects(client.call("lookup", { project: "p" }, tool.schemaHash, signal()),
+    (error) => error instanceof McpFailure && error.outcome === "unknown");
+  let dispatches = 0;
+  try { dispatches = readFileSync(ledger, "utf8").trim().split("\n").filter(Boolean).length; } catch { dispatches = 0; }
+  assert.equal(dispatches, 1); // exactly one tools/call ever reached the server
+  assert.equal((await client.tools(signal())).length, 1); // the read path rebuilds after the crash
 });

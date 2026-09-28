@@ -17,21 +17,29 @@ export interface SearchOptions {
 	enabled: boolean;
 	/** Backend id; only providers returned by supportedSearchProviders() are implemented. */
 	provider?: "searxng";
-	/** Base URL of a self-hosted SearXNG instance (no API key); requests go only to this instance. */
+	/** Comma-separated base URLs of self-hosted SearXNG instances (no API key); tried in order. */
 	searxngUrl?: string;
 	maxResults?: number;
 	maxResponseBytes?: number;
 	timeoutMs?: number;
+	/** Total attempt cap across all instances (network errors, timeouts, 429 and 5xx only). */
+	maxAttempts?: number;
+	/** Total wall-clock budget for retries; no new attempt starts after it expires. */
+	retryBudgetMs?: number;
 	fetch?: typeof fetch;
 }
 /** Everything a provider implementation needs; the fetch seam keeps backends replaceable. */
 export interface SearchExecution {
-	searxngUrl?: string;
+	searxngUrls: string[];
 	maxResults: number;
 	maxResponseBytes: number;
 	timeoutMs: number;
+	maxAttempts: number;
+	retryBudgetMs: number;
 	fetch: typeof fetch;
 }
+/** Transient transport/backend failure; retried against the next instance, never reclassified as data error. */
+class TransientSearchError extends Error {}
 export interface SearchProvider {
 	readonly id: string;
 	search(query: string, execution: SearchExecution, signal?: AbortSignal): Promise<SearchResult>;
@@ -80,14 +88,22 @@ async function fetchJson(
 	signal?.throwIfAborted();
 	const timeout = AbortSignal.timeout(execution.timeoutMs);
 	const effectiveSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
-	const response = await execution.fetch(endpoint, {
-		headers,
-		signal: effectiveSignal,
-		redirect: "error", // Fixed destination only; never follow to another host.
-	});
+	let response: Response;
+	try {
+		response = await execution.fetch(endpoint, {
+			headers,
+			signal: effectiveSignal,
+			redirect: "error", // Fixed destination only; never follow to another host.
+		});
+	} catch (error) {
+		signal?.throwIfAborted(); // Caller cancellation is final; only timeouts and network faults retry.
+		throw new TransientSearchError(error instanceof Error ? error.message : "Search backend request failed");
+	}
 	if (!response.ok) {
 		await response.body?.cancel();
-		throw new Error(`Search backend returned HTTP ${response.status}`); // No key/error-body leakage.
+		const message = `Search backend returned HTTP ${response.status}`; // No key/error-body leakage.
+		if (response.status === 429 || response.status >= 500) throw new TransientSearchError(message);
+		throw new Error(message);
 	}
 	const json = await limitedJson(response, execution.maxResponseBytes);
 	effectiveSignal.throwIfAborted();
@@ -122,20 +138,48 @@ function collectHits(hits: unknown[], execution: SearchExecution): { results: Se
 	}
 	return { results, truncated };
 }
-/** SearXNG (AGPLv3, self-hosted): no API key; every request goes only to the configured instance. */
+/** SearXNG (AGPLv3, self-hosted): no API key; every request goes only to the configured instances. */
 async function searxngSearch(query: string, execution: SearchExecution, signal?: AbortSignal): Promise<SearchResult> {
 	const trimmed = checkQuery(query);
-	let base: URL;
-	try {
-		base = new URL((execution.searxngUrl ?? "").trim());
-	} catch {
-		throw new Error("Missing or invalid PI861_SEARCH_SEARXNG_URL for the searxng backend");
+	const endpoints = execution.searxngUrls.map((raw) => {
+		let base: URL;
+		try {
+			base = new URL(raw.trim());
+		} catch {
+			throw new Error("Missing or invalid PI861_SEARCH_SEARXNG_URL for the searxng backend");
+		}
+		if (!["http:", "https:"].includes(base.protocol) || base.username || base.password)
+			throw new Error("Missing or invalid PI861_SEARCH_SEARXNG_URL for the searxng backend");
+		const endpoint = new URL("search", base); // Keeps an instance base path; drops its query string.
+		endpoint.searchParams.set("q", trimmed);
+		endpoint.searchParams.set("format", "json");
+		return endpoint;
+	});
+	// Bounded instance-by-instance failover (hot-update tolerance): transient faults (network error,
+	// timeout, 429, 5xx) try the next configured endpoint; format, size and parameter errors fail
+	// immediately. Failover only changes the transport endpoint, never the query or its authorization.
+	const deadline = Date.now() + execution.retryBudgetMs;
+	let lastTransient: unknown;
+	for (let attempt = 0; attempt < execution.maxAttempts; attempt++) {
+		if (attempt > 0 && Date.now() >= deadline) break;
+		const endpoint = endpoints[attempt % endpoints.length];
+		if (endpoint === undefined)
+			throw new Error("Missing or invalid PI861_SEARCH_SEARXNG_URL for the searxng backend");
+		try {
+			return await searxngSearchOnce(endpoint, trimmed, execution, signal);
+		} catch (error) {
+			if (!(error instanceof TransientSearchError)) throw error;
+			lastTransient = error;
+		}
 	}
-	if (!["http:", "https:"].includes(base.protocol) || base.username || base.password)
-		throw new Error("Missing or invalid PI861_SEARCH_SEARXNG_URL for the searxng backend");
-	const endpoint = new URL("search", base); // Keeps an instance base path; drops its query string.
-	endpoint.searchParams.set("q", trimmed);
-	endpoint.searchParams.set("format", "json");
+	throw lastTransient;
+}
+async function searxngSearchOnce(
+	endpoint: URL,
+	trimmed: string,
+	execution: SearchExecution,
+	signal?: AbortSignal,
+): Promise<SearchResult> {
 	const json = record(await fetchJson(endpoint, { Accept: "application/json" }, execution, signal));
 	const hits = json?.results;
 	if (hits !== undefined && !Array.isArray(hits)) throw new Error("Malformed search response");
@@ -154,12 +198,17 @@ export function resolveSearchProvider(id: string | undefined): SearchProvider {
 }
 export async function webSearch(query: string, options: SearchOptions, signal?: AbortSignal): Promise<SearchResult> {
 	if (!options.enabled) throw new Error("Web search is disabled; configure PI861_WEB_SEARCH_ENABLED=1");
-	const searxngUrl = options.searxngUrl?.trim();
-	if (!searxngUrl) throw new Error("No search backend configured; set PI861_SEARCH_SEARXNG_URL");
+	const searxngUrls = (options.searxngUrl ?? "")
+		.split(",")
+		.map((entry) => entry.trim())
+		.filter(Boolean);
+	if (searxngUrls.length === 0) throw new Error("No search backend configured; set PI861_SEARCH_SEARXNG_URL");
 	const provider = resolveSearchProvider(options.provider);
 	const count = options.maxResults ?? 5;
 	const maxBytes = options.maxResponseBytes ?? 262_144;
 	const timeoutMs = options.timeoutMs ?? 15_000;
+	const maxAttempts = options.maxAttempts ?? Math.max(3, searxngUrls.length); // Default: ~2 retries per fault.
+	const retryBudgetMs = options.retryBudgetMs ?? 30_000;
 	if (
 		!Number.isSafeInteger(count) ||
 		count < 1 ||
@@ -167,16 +216,23 @@ export async function webSearch(query: string, options: SearchOptions, signal?: 
 		!Number.isSafeInteger(maxBytes) ||
 		maxBytes < 1024 ||
 		!Number.isSafeInteger(timeoutMs) ||
-		timeoutMs < 1
+		timeoutMs < 1 ||
+		!Number.isSafeInteger(maxAttempts) ||
+		maxAttempts < 1 ||
+		maxAttempts > 10 ||
+		!Number.isSafeInteger(retryBudgetMs) ||
+		retryBudgetMs < 1
 	)
 		throw new Error("Invalid search limits");
 	return provider.search(
 		query,
 		{
-			searxngUrl,
+			searxngUrls,
 			maxResults: count,
 			maxResponseBytes: maxBytes,
 			timeoutMs,
+			maxAttempts,
+			retryBudgetMs,
 			fetch: options.fetch ?? fetch,
 		},
 		signal,
@@ -186,7 +242,7 @@ export async function webSearch(query: string, options: SearchOptions, signal?: 
 export function searchOptionsFromEnv(env: Record<string, string | undefined> = process.env): SearchOptions {
 	return {
 		enabled: env.PI861_WEB_SEARCH_ENABLED === "1",
-		searxngUrl: env.PI861_SEARCH_SEARXNG_URL?.trim() || undefined,
+		searxngUrl: env.PI861_SEARCH_SEARXNG_URL?.trim() || undefined, // Comma-separated instances stay one string.
 	};
 }
 

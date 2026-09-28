@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { migrateMemoryAuthority, OutboxConsumer, PostgresMemory } from "../src/postgres.ts";
+import { migrateMemoryAuthority, isTransientConnectionError, OutboxConsumer, PostgresMemory } from "../src/postgres.ts";
 import { FileStateStore } from "../src/live/store.ts";
 import { LayeredMemory, emptyLayeredMemory } from "../src/live/layered-memory.ts";
 
@@ -182,6 +182,79 @@ test("listing pages key-ordered without withdrawn records and hides other scopes
 	await store.withdraw("w-c", "project:p1", "c", 1);
 	assert.deepEqual((await store.list("project:p1", "b", 2)).items, []);
 	assert.deepEqual((await store.list("project:other", "", 2)).items, []);
+});
+
+test("read-only transactions retry connection-class failures on a fresh connection with the same principal", async () => {
+	const calls = [];
+	let connections = 0;
+	const pool = { async connect() {
+		connections++;
+		const broken = connections === 1;
+		return { async query(sql, params) {
+			calls.push({ sql, params });
+			if (broken && sql.startsWith("SELECT body FROM pi861_memory_items")) {
+				const error = new Error("Connection terminated unexpectedly");
+				error.code = "57P01";
+				throw error;
+			}
+			if (!broken && sql.startsWith("SELECT body FROM pi861_memory_items"))
+				return { rows: [{ body: { ...input.item, revision: 1, updatedAt: 0 } }] };
+			return { rows: [] };
+		}, release() {} };
+	} };
+	const store = new PostgresMemory(pool, principal, { maxRetries: 2, baseDelayMs: 1 });
+	assert.equal((await store.get("project:p1", "fact1")).id, "fact1");
+	assert.equal(connections, 2); // the retry used a fresh connection, never the broken one
+	const settings = calls.filter((call) => call.sql.includes("set_config"));
+	assert.equal(settings.length, 2); // each attempt re-runs the RLS session setup (R6)
+	assert.deepEqual(settings[0].params, settings[1].params);
+	assert.ok(calls.some((call) => call.sql === "ROLLBACK"));
+});
+test("read failures outside the connection class are never retried", async () => {
+	let connections = 0;
+	const pool = { async connect() { connections++; return { async query(sql) {
+		if (sql.startsWith("SELECT body FROM pi861_memory_items")) {
+			const error = new Error("permission denied for table pi861_memory_items");
+			error.code = "42501";
+			throw error;
+		}
+		return { rows: [] };
+	}, release() {} }; } };
+	await assert.rejects(
+		new PostgresMemory(pool, principal, { maxRetries: 2, baseDelayMs: 1 }).get("project:p1", "fact1"),
+		/permission denied/,
+	);
+	assert.equal(connections, 1);
+});
+test("write transactions never retry, even for connection-class failures", async () => {
+	let connections = 0;
+	const pool = { async connect() { connections++; return { async query(sql) {
+		if (sql === "COMMIT") throw new Error("socket hang up");
+		return { rows: [] };
+	}, release() {} }; } };
+	await assert.rejects(
+		new PostgresMemory(pool, principal, { maxRetries: 2, baseDelayMs: 1 }).put(input),
+		/socket hang up/,
+	);
+	assert.equal(connections, 1); // ambiguous writes stay with the caller's requestId replay semantics
+});
+test("connection-error classifier covers transport loss only", () => {
+	const transient = [
+		Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+		Object.assign(new Error("server closed the connection"), { code: "08006" }),
+		Object.assign(new Error("shutting down"), { code: "57P01" }),
+		Object.assign(new Error("cannot connect now"), { code: "57P03" }),
+		new Error("Connection terminated unexpectedly"),
+	];
+	const permanent = [
+		Object.assign(new Error("syntax error"), { code: "42601" }),
+		Object.assign(new Error("permission denied"), { code: "42501" }),
+		Object.assign(new Error("duplicate key"), { code: "23505" }),
+		new Error("Memory revision conflict"),
+		"not an error",
+	];
+	for (const error of transient) assert.equal(isTransientConnectionError(error), true, String(error));
+	for (const error of permanent) assert.equal(isTransientConnectionError(error), false, String(error));
 });
 
 test("outbox consumer applies events, deletes only accepted rows and keeps failures queued", async () => {

@@ -79,6 +79,64 @@ test("searxng truncation, unsafe links and size/cancel bounds reuse the shared p
 	await assert.rejects(webSearch("query", sx(async () => { calls++; return searxngResponse([]); }), controller.signal), /cancel/);
 	assert.equal(calls, 0);
 });
+test("transient instance failures fail over to the next configured instance", async () => {
+	const seen = [];
+	const found = await webSearch("failover", {
+		enabled: true,
+		searxngUrl: "http://127.0.0.1:9001, http://127.0.0.1:9002",
+		fetch: async (url) => {
+			seen.push(url.origin);
+			if (url.origin === "http://127.0.0.1:9001") return new Response("down", { status: 503 });
+			return searxngResponse([{ title: "Ok", url: "https://example.org/ok", content: "from second instance" }]);
+		},
+	});
+	assert.deepEqual(seen, ["http://127.0.0.1:9001", "http://127.0.0.1:9002"]);
+	assert.deepEqual(found.results, [{ title: "Ok", url: "https://example.org/ok", snippet: "from second instance" }]);
+});
+test("network errors retry a bounded number of times, then surface the last transient error", async () => {
+	let calls = 0;
+	await assert.rejects(
+		webSearch("flaky", { enabled: true, searxngUrl: "http://127.0.0.1:9001", fetch: async () => {
+			calls++;
+			throw new TypeError("fetch failed");
+		} }),
+		/fetch failed/,
+	);
+	assert.equal(calls, 3); // default: one attempt plus two retries per configured set of instances
+});
+test("4xx, malformed and size errors are not retried against other instances", async () => {
+	let calls = 0;
+	const counted = (impl) => async (...args) => { calls++; return impl(...args); };
+	await assert.rejects(
+		webSearch("bad", { enabled: true, searxngUrl: "http://a.example, http://b.example", fetch: counted(async () => new Response("no", { status: 404 })) }),
+		(error) => error.message === "Search backend returned HTTP 404",
+	);
+	assert.equal(calls, 1);
+	calls = 0;
+	await assert.rejects(
+		webSearch("bad", { enabled: true, searxngUrl: "http://a.example, http://b.example", fetch: counted(async () => Response.json({})) }),
+		/lacks/,
+	);
+	assert.equal(calls, 1);
+});
+test("the retry budget stops new attempts once the total time limit is spent", async () => {
+	let calls = 0;
+	await assert.rejects(
+		webSearch("budget", {
+			enabled: true,
+			searxngUrl: "http://127.0.0.1:9001",
+			maxAttempts: 10,
+			retryBudgetMs: 60,
+			fetch: async () => {
+				calls++;
+				await new Promise((resolve) => setTimeout(resolve, 100)); // first attempt alone outlives the budget
+				return new Response("down", { status: 503 });
+			},
+		}),
+		/error|503/,
+	);
+	assert.equal(calls, 1); // the attempt budget says 10, the 60ms wall-clock budget stops any retry
+});
 test("env parsing keeps search default-off and never reaches the network unconfigured", async () => {
 	const off = searchOptionsFromEnv({});
 	assert.equal(off.enabled, false);

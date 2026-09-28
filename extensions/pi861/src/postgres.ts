@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { setTimeout as defaultSleep } from "node:timers/promises";
 import type { LayeredMemoryState } from "./live/layered-memory.ts";
 import type { StateStore } from "./live/store.ts";
 import {
@@ -27,6 +28,39 @@ export interface SqlPool {
 	connect(): Promise<SqlConnection>;
 }
 
+/** Bounded transient retry for read-only transactions (hot-update tolerance). */
+export interface ReadRetryPolicy {
+	maxRetries?: number;
+	baseDelayMs?: number;
+	sleep?: (ms: number) => Promise<void>;
+}
+const DRIVER_CONNECTION_CODES = new Set([
+	"ECONNREFUSED",
+	"ECONNRESET",
+	"ECONNABORTED",
+	"EPIPE",
+	"ETIMEDOUT",
+	"ENOTFOUND",
+	"EAI_AGAIN",
+]);
+/**
+ * Connection establishment/loss only: driver socket codes, PostgreSQL connection-exception class
+ * (SQLSTATE 08xxx), admin shutdown (57P01) and cannot-connect-now (57P03), plus the classic
+ * node-postgres termination messages. Syntax, permission, RLS, validation and revision-conflict
+ * errors are deliberately not retryable.
+ */
+export function isTransientConnectionError(error: unknown): boolean {
+	if (typeof error !== "object" || error === null) return false;
+	const code = (error as { code?: unknown }).code;
+	if (
+		typeof code === "string" &&
+		(DRIVER_CONNECTION_CODES.has(code) || /^08[0-9A-Z]{3}$/.test(code) || code === "57P01" || code === "57P03")
+	)
+		return true;
+	const message = (error as { message?: unknown }).message;
+	return typeof message === "string" && /connection terminated|socket hang up|connection reset by peer/i.test(message);
+}
+
 /**
  * PostgreSQL authoritative store. Provision sql/memory-v1.sql separately.
  * All writes, revisions, outbox events and idempotency receipts commit together.
@@ -34,10 +68,16 @@ export interface SqlPool {
 export class PostgresMemory implements MemoryBackend {
 	private readonly pool: SqlPool;
 	private readonly principal: MemoryPrincipal;
-	constructor(pool: SqlPool, principal: MemoryPrincipal) {
+	private readonly readRetry: Required<ReadRetryPolicy>;
+	constructor(pool: SqlPool, principal: MemoryPrincipal, readRetry: ReadRetryPolicy = {}) {
 		checkPrincipal(principal);
 		this.pool = pool;
 		this.principal = structuredClone(principal);
+		this.readRetry = {
+			maxRetries: Math.max(0, Math.min(4, readRetry.maxRetries ?? 2)),
+			baseDelayMs: readRetry.baseDelayMs ?? 100,
+			sleep: readRetry.sleep ?? defaultSleep,
+		};
 	}
 	private async transaction<T>(fn: (connection: SqlConnection) => Promise<T>): Promise<T> {
 		const connection = await this.pool.connect();
@@ -64,9 +104,25 @@ export class PostgresMemory implements MemoryBackend {
 			connection.release();
 		}
 	}
+	/**
+	 * Read-only transactions retry the whole transaction on connection-class failures with
+	 * exponential backoff; the retry grabs a fresh connection and re-runs the same RLS
+	 * set_config with the same principal, so authorization is unchanged (R6). Business errors
+	 * never retry, and writes keep their single-attempt pending-queue semantics.
+	 */
+	private async readTransaction<T>(fn: (connection: SqlConnection) => Promise<T>): Promise<T> {
+		for (let attempt = 0; ; attempt++) {
+			try {
+				return await this.transaction(fn);
+			} catch (error) {
+				if (attempt >= this.readRetry.maxRetries || !isTransientConnectionError(error)) throw error;
+				await this.readRetry.sleep(this.readRetry.baseDelayMs * 2 ** attempt);
+			}
+		}
+	}
 	async get(scope: string, id: string): Promise<MemoryItem | undefined> {
 		if (!this.principal.readScopes.includes(scope)) return undefined;
-		return this.transaction(async (connection) => {
+		return this.readTransaction(async (connection) => {
 			const result = await connection.query(
 				"SELECT body FROM pi861_memory_items WHERE tenant_id=$1 AND scope_key=$2 AND memory_id=$3 " +
 					"AND body->>'status' <> 'withdrawn'",
@@ -79,7 +135,7 @@ export class PostgresMemory implements MemoryBackend {
 		if (!query.trim() || query.length > 2000 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
 			throw new Error("Invalid memory query");
 		}
-		return this.transaction(async (connection) => {
+		return this.readTransaction(async (connection) => {
 			const result = await connection.query(
 				"SELECT body FROM pi861_memory_items WHERE tenant_id=$1 AND scope_key=ANY($2::text[]) " +
 					"AND body->>'status' <> 'withdrawn' AND " +
@@ -177,7 +233,7 @@ export class PostgresMemory implements MemoryBackend {
 		if (!this.principal.readScopes.includes(scope)) return { items: [] };
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || typeof afterId !== "string")
 			throw new Error("Invalid page limit");
-		return this.transaction(async (connection) => {
+		return this.readTransaction(async (connection) => {
 			const result = await connection.query(
 				"SELECT body FROM pi861_memory_items WHERE tenant_id=$1 AND scope_key=$2 AND body->>'status' <> 'withdrawn' " +
 					"AND memory_id > $3 ORDER BY memory_id LIMIT $4",
@@ -190,7 +246,7 @@ export class PostgresMemory implements MemoryBackend {
 	}
 	/** All items in read scopes including withdrawn ones; authority reconciliation and migration verification, not a general read path. */
 	async exportItems(): Promise<MemoryItem[]> {
-		return this.transaction(async (connection) => {
+		return this.readTransaction(async (connection) => {
 			const result = await connection.query(
 				"SELECT scope_key, memory_id, body FROM pi861_memory_items WHERE tenant_id=$1 AND scope_key=ANY($2::text[]) " +
 					"ORDER BY scope_key, memory_id",
