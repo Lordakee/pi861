@@ -1,5 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { createWriteStream } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { record } from "../search.ts";
 
@@ -38,7 +39,13 @@ export class LineProcess {
 		this.exited = new Promise((resolve) => {
 			this.child.once("close", () => resolve());
 		});
-		this.child.stderr.resume(); // Do not put arbitrary stderr/credentials in the model context.
+		if (process.env.PI861_DEBUG_STDERR) {
+			// Debug mode: tee stderr to a file for worker diagnosis
+			const stream = createWriteStream(process.env.PI861_DEBUG_STDERR, { flags: "a" });
+			this.child.stderr.pipe(stream);
+		} else {
+			this.child.stderr.resume(); // Do not put arbitrary stderr/credentials in the model context.
+		}
 		this.child.stdin.on("error", () => this.fail(new Error("Child input pipe failed")));
 		this.child.on("error", () => this.fail(new Error("Child process could not start")));
 		this.child.on("close", () => this.fail(new Error("Child process closed")));
