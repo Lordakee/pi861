@@ -89,19 +89,22 @@ test("BFS order, depth bounds and per-page fields", async () => {
 	} finally { stopServer(server); }
 });
 
-test("cross-host and unapproved links are skipped and recorded, not fatal", async () => {
+test("cross-host and unapproved links are skipped and recorded, not fatal; overflow truncated (crawl-F003)", async () => {
 	const server = createServer((req, res) => {
 		res.writeHead(200, { "content-type": "text/html" });
-		if (req.url === "/start") res.end(doc("start", link("/ok") + link("http://evil.example/x") + link(`http://fixture.test:${port}/cross`)));
-		else res.end(doc("ok", ""));
+		if (req.url === "/start") {
+			// 2 boundary-case links plus 60 off-host links: skippedLinks caps at 50 with an omitted count
+			const overflow = Array.from({ length: 60 }, (_, i) => `<a href="http://bulk-${i}.example/p">b</a>`).join("");
+			res.end(doc("start", link("/ok") + link("http://evil.example/x") + link(`http://fixture.test:${port}/cross`) + overflow));
+		} else res.end(doc("ok", ""));
 	});
 	await listen(server);
 	const port = server.address().port;
 	try {
 		const found = await crawlWebsite(`http://127.0.0.1:${port}/start`, crawlOptions(port));
 		assert.equal(found.pagesVisited, 2);
-		assert.deepEqual(found.skippedLinks, ["http://evil.example/x", `http://fixture.test:${port}/cross`]);
-		assert.equal(found.skippedLinksOmitted, 0);
+		assert.equal(found.skippedLinks.length, 50);
+		assert.equal(found.skippedLinksOmitted, 12); // 2 boundary + 60 bulk = 62, capped at 50
 		assert.equal(found.stopReason, "complete");
 	} finally { stopServer(server); }
 });

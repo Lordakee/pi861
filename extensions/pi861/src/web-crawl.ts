@@ -20,6 +20,8 @@ export interface CrawlOptions {
 	sameHost?: boolean;
 	/** Delay before every request except the first. Default 250 ms. */
 	requestIntervalMs?: number;
+	/** Whole-crawl wall clock cap in milliseconds (default 600000, range 1000-3600000). */
+	deadlineMs?: number;
 	/** Include each page's full extracted text instead of only a summary. Default false. */
 	includeContent?: boolean;
 	/** Allow crawling approved internal endpoints; production crawls stay public-host-only. Default false. */
@@ -39,7 +41,7 @@ export interface CrawlPageEntry {
 	truncated: boolean;
 	content?: string;
 }
-export type CrawlStopReason = "complete" | "max_pages" | "byte_budget";
+export type CrawlStopReason = "complete" | "max_pages" | "byte_budget" | "deadline";
 export interface CrawlResult {
 	startUrl: string;
 	retrievedAt: string;
@@ -93,6 +95,10 @@ export async function crawlWebsite(rawUrl: string, options: CrawlOptions, signal
 	)
 		throw new Error("Invalid crawl limits");
 	const allowInternal = options.allowInternalEndpoints ?? false;
+	const startedAtMs = Date.now();
+	const deadlineMs = options.deadlineMs ?? 600_000; // whole-crawl wall clock cap (crawl-F002)
+	if (!Number.isSafeInteger(deadlineMs) || deadlineMs < 1_000 || deadlineMs > 3_600_000)
+		throw new Error("Invalid crawl limits");
 	const start = authorizeTarget(rawUrl, options.read.policy); // validates scheme, credentials and host approval
 	if (start.kind === "internal" && !allowInternal)
 		throw new Error("Web crawl refuses internal endpoints; approve public hosts for crawling");
@@ -112,6 +118,11 @@ export async function crawlWebsite(rawUrl: string, options: CrawlOptions, signal
 
 	while (queue.length > 0) {
 		signal?.throwIfAborted();
+		if (Date.now() - startedAtMs >= deadlineMs) {
+			stopReason = "deadline";
+			truncated = true;
+			break;
+		}
 		if (pages.length >= maxPages) {
 			stopReason = "max_pages";
 			truncated = true; // queued work remained unvisited; never report such a crawl as complete
@@ -136,6 +147,9 @@ export async function crawlWebsite(rawUrl: string, options: CrawlOptions, signal
 			);
 		} catch (error) {
 			if (signal?.aborted) throw error; // caller cancellation is final, not a page failure
+			// Budget is accounted per attempted page: a failing page may still have consumed up to
+			// its cap from the wire before erroring, so deduct pessimistically (crawl-F001).
+			remaining -= Math.min(pageCap, remaining);
 			pages.push({
 				url: next.url,
 				depth: next.depth,
