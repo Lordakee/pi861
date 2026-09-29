@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pi861 dashboard</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <h1>pi861 <span class="dim">team runtime</span></h1>
+    <span id="conn" class="badge">connecting</span>
+    <span id="updatedAt" class="dim"></span>
+  </header>
+
+  <main id="app">
+    <section class="card" id="goalCard">
+      <h2>Goal</h2>
+      <div id="goalBody" class="muted">waiting for data</div>
+    </section>
+
+    <section class="card">
+      <h2>Task board</h2>
+      <div id="board" class="board"></div>
+    </section>
+
+    <section class="card">
+      <h2>Workers</h2>
+      <div id="workers" class="muted">waiting for data</div>
+    </section>
+
+    <section class="card">
+      <h2>Model usage</h2>
+      <div id="usage" class="muted">waiting for data</div>
+      <h2>Budget</h2>
+      <div id="budget"></div>
+    </section>
+
+    <section class="card">
+      <h2>Memory</h2>
+      <div id="memory" class="muted">waiting for data</div>
+    </section>
+
+    <section class="card">
+      <h2>Events</h2>
+      <ul id="events" class="events"><li class="muted">waiting for data</li></ul>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
