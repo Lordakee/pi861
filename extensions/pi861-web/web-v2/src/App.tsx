@@ -1,18 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { MessageSquare, Target, Users, Brain, Settings as SettingsIcon, Wifi, WifiOff } from 'lucide-react'
-import Chat from './pages/Chat'
-import MissionControl from './pages/MissionControl'
-import AgentFleet from './pages/AgentFleet'
-import ModelHub from './pages/ModelHub'
-import Settings from './pages/Settings'
+
+// Page components (inline for single-file build)
+import ChatPage from './pages/Chat'
+import MissionPage from './pages/Mission'
+import AgentsPage from './pages/Agents'
+import ModelsPage from './pages/Models'
+import SettingsPage from './pages/Settings'
 
 type Page = 'chat'|'mission'|'agents'|'models'|'settings'
-const NAV: {id:Page; label:string; icon:React.ReactNode}[] = [
-  {id:'chat', label:'Chat', icon:<MessageSquare size={18}/>},
-  {id:'mission', label:'Mission Control', icon:<Target size={18}/>},
-  {id:'agents', label:'Agent Fleet', icon:<Users size={18}/>},
-  {id:'models', label:'Models', icon:<Brain size={18}/>},
-  {id:'settings', label:'Settings', icon:<SettingsIcon size={18}/>},
+const NAV = [
+  {id:'chat' as Page, label:'💬', text:'Chat'},
+  {id:'mission' as Page, label:'🎯', text:'Mission Control'},
+  {id:'agents' as Page, label:'🤖', text:'Agent Fleet'},
+  {id:'models' as Page, label:'🧠', text:'Models'},
+  {id:'settings' as Page, label:'⚙️', text:'Settings'},
 ]
 
 export default function App() {
@@ -29,8 +30,9 @@ export default function App() {
     ws.onopen = () => { setConnected(true); ws.send(JSON.stringify({type:'subscribe'})) }
     ws.onclose = () => { setConnected(false); setTimeout(()=>connect(tok), 3000) }
     ws.onmessage = (e) => {
-      const data = JSON.parse(e.data)
-      if (data.type === 'project.snapshot') setSnapshot(data.snapshot)
+      try { const data = JSON.parse(e.data)
+        if (data.type === 'project.snapshot') setSnapshot(data.snapshot)
+      } catch {}
     }
     wsRef.current = ws
   }, [])
@@ -40,36 +42,31 @@ export default function App() {
   if (showAuth) return <Auth onAuth={(t)=>{localStorage.setItem('pi861_token',t); setToken(t); setShowAuth(false)}}/>
 
   return (
-    <div style={{display:'grid', gridTemplateRows:'48px 1fr', gridTemplateColumns:'220px 1fr', height:'100vh'}}>
-      {/* Top Bar */}
-      <div style={{gridColumn:'1/-1'}} className="flex items-center justify-between px-4 border-b border-border bg-panel">
-        <span className="font-bold text-accent text-lg">⚡ pi861</span>
-        <div className="flex items-center gap-3 text-sm">
-          <span className="text-muted text-xs">{snapshot?.goal?.objective?.slice(0,40) || 'No goal'}</span>
+    <div className="layout">
+      <div className="topbar">
+        <span className="logo">⚡ pi861</span>
+        <div className="status">
+          <span style={{fontSize:12,color:'var(--muted)'}}>{snapshot?.goal?.objective?.slice(0,50) || 'No goal'}</span>
           {connected
-            ? <span className="badge badge-done"><Wifi size={12}/> Connected</span>
-            : <span className="badge badge-blocked"><WifiOff size={12}/> Reconnecting...</span>}
+            ? <span className="badge badge-done">● Connected</span>
+            : <span className="badge badge-blocked">● Reconnecting...</span>}
         </div>
       </div>
-
-      {/* Sidebar */}
-      <div className="border-r border-border bg-panel p-2 flex flex-col gap-1">
+      <div className="sidebar">
         {NAV.map(item => (
           <button key={item.id} onClick={()=>setPage(item.id)}
-            className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all
-              ${page===item.id ? 'bg-accent/10 text-accent font-semibold' : 'text-muted hover:bg-accent/5 hover:text-text'}`}>
-            {item.icon}<span>{item.label}</span>
+            className={`nav-item ${page===item.id ? 'active' : ''}`}>
+            <span style={{fontSize:16}}>{item.label}</span>
+            <span>{item.text}</span>
           </button>
         ))}
       </div>
-
-      {/* Main Content */}
-      <div className="overflow-hidden">
-        {page==='chat' && <Chat ws={wsRef.current} connected={connected}/>}
-        {page==='mission' && <MissionControl ws={wsRef.current} snapshot={snapshot}/>}
-        {page==='agents' && <AgentFleet ws={wsRef.current} snapshot={snapshot}/>}
-        {page==='models' && <ModelHub snapshot={snapshot}/>}
-        {page==='settings' && <Settings ws={wsRef.current} snapshot={snapshot}/>}
+      <div className="main-content">
+        {page==='chat' && <ChatPage ws={wsRef.current} connected={connected}/>}
+        {page==='mission' && <MissionPage ws={wsRef.current} snapshot={snapshot}/>}
+        {page==='agents' && <AgentsPage ws={wsRef.current} snapshot={snapshot}/>}
+        {page==='models' && <ModelsPage snapshot={snapshot}/>}
+        {page==='settings' && <SettingsPage ws={wsRef.current} snapshot={snapshot}/>}
       </div>
     </div>
   )
@@ -78,14 +75,14 @@ export default function App() {
 function Auth({ onAuth }: { onAuth:(t:string)=>void }) {
   const [token, setToken] = useState('')
   return (
-    <div className="flex items-center justify-center" style={{height:'100vh', background:'var(--color-bg)'}}>
-      <div className="card p-8 w-96 space-y-4 text-center">
-        <div className="text-4xl mb-2">⚡</div>
-        <h2 className="text-xl font-bold">pi861 Console</h2>
-        <p className="text-sm text-muted">Enter your access token</p>
+    <div className="auth-overlay">
+      <div className="card auth-card">
+        <div style={{fontSize:40}}>⚡</div>
+        <h2 style={{fontSize:20,fontWeight:700}}>pi861 Console</h2>
+        <p style={{fontSize:13,color:'var(--muted)'}}>Enter your access token</p>
         <input className="input" type="password" placeholder="Token..." value={token} onChange={e=>setToken(e.target.value)}
           onKeyDown={e=>{if(e.key==='Enter'&&token)onAuth(token)}} autoFocus/>
-        <button className="btn btn-primary w-full" onClick={()=>token&&onAuth(token)} disabled={!token}>Connect</button>
+        <button className="btn btn-primary" onClick={()=>token&&onAuth(token)} disabled={!token} style={{width:'100%'}}>Connect</button>
       </div>
     </div>
   )
