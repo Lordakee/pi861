@@ -13,7 +13,7 @@ import { createProtocol } from "./protocol.mjs";
 import { createChatBridge } from "./rpc-bridge.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const webDir = path.join(here, "..", "web");
+const webDir = path.join(here, "..", "web-v2", "dist");
 const MIME = {
 	".html": "text/html; charset=utf-8",
 	".js": "text/javascript; charset=utf-8",
